@@ -1,0 +1,196 @@
+# Reusable .NET Build, Test, and Package Workflow
+# Filename: .github/workflows/reusable-build-test-dotnet.yml
+# Purpose: Compiles, tests, and optionally packages .NET applications.
+
+name: Reusable .NET Build, Test &amp; Package
+
+on:
+  workflow_call:
+    inputs:
+      solution-path:
+        description: 'Path to the .sln file or .csproj file.'
+        required: false
+        type: string
+        default: '**/*.sln'
+      build-configuration:
+        description: 'Build configuration (e.g., Debug, Release).'
+        required: false
+        type: string
+        default: 'Release'
+      dotnet-version-to-use:
+        description: 'Specific .NET SDK version to use for the build. Assumes SDK is set up by caller if not provided.'
+        required: false
+        type: string
+        default: '' # Caller should manage SDK setup or pass a specific version
+      run-tests:
+        description: 'Whether to run tests.'
+        required: false
+        type: boolean
+        default: true
+      test-project-path:
+        description: 'Path to test projects (if different from solution path or for specific targeting). Defaults to solution-path.'
+        required: false
+        type: string
+        default: ''
+      test-filter:
+        description: 'Filter for dotnet test (e.g., FullyQualifiedName~MyTests).'
+        required: false
+        type: string
+        default: ''
+      test-results-format:
+        description: 'Format for test results (e.g., trx, junit).'
+        required: false
+        type: string
+        default: 'trx'
+      test-results-directory:
+        description: 'Directory to output test results.'
+        required: false
+        type: string
+        default: 'TestResults'
+      package-application:
+        description: 'Whether to package the application (dotnet publish).'
+        required: false
+        type: boolean
+        default: false
+      publish-output-directory:
+        description: 'Output directory for dotnet publish.'
+        required: false
+        type: string
+        default: './publish'
+      artifact-name-prefix:
+        description: 'Prefix for uploaded artifacts (build output, test results).'
+        required: true
+        type: string
+      upload-build-artifacts:
+        description: 'Whether to upload build artifacts. Typically true if package-application is true.'
+        required: false
+        type: boolean
+        default: false # Default to false, caller can enable
+      upload-test-results-artifact:
+        description: 'Whether to upload test results as an artifact.'
+        required: false
+        type: boolean
+        default: true
+      cache-nuget-packages:
+        description: 'Whether to cache NuGet packages.'
+        required: false
+        type: boolean
+        default: true
+
+    outputs:
+      status:
+        description: "Overall status of the build and test process ('success' or 'failure')."
+        value: ${{ jobs.build_and_test_job.outputs.job_status }}
+      build-artifact-name:
+        description: 'Name of the uploaded build artifact (if uploaded).'
+        value: ${{ jobs.build_and_test_job.outputs.build_artifact_name_output }}
+      test-results-artifact-name:
+        description: 'Name of the uploaded test results artifact.'
+        value: ${{ jobs.build_and_test_job.outputs.test_results_artifact_name_output }}
+      published-output-path:
+        description: 'Path to the published application output (if packaged).'
+        value: ${{ jobs.build_and_test_job.outputs.published_output_path_output }}
+
+    secrets:
+      NUGET_FEED_AUTH_TOKEN:
+        description: 'Token for authenticating to private NuGet feeds during restore.'
+        required: false
+
+jobs:
+  build_and_test_job:
+    name: Build, Test, and Package
+    runs-on: ubuntu-latest # Or make this an input: runs-on: ${{ inputs.runner-os || 'ubuntu-latest' }}
+    outputs:
+      job_status: ${{ steps.set_final_status.outputs.status }}
+      build_artifact_name_output: ${{ steps.upload_build_artifact.outputs.artifact-name }}
+      test_results_artifact_name_output: ${{ steps.upload_test_results.outputs.artifact-name }}
+      published_output_path_output: ${{ inputs.publish-output-directory }}
+
+    steps:
+      - name: Checkout repository (if needed independently)
+        uses: actions/checkout@v4
+        # This reusable workflow assumes the caller has already checked out the code.
+        # If it can be called independently where code isn't checked out, uncomment the above.
+
+      - name: Setup .NET SDK
+        if: inputs.dotnet-version-to-use != ''
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ inputs.dotnet-version-to-use }}
+
+      - name: Cache NuGet packages
+        if: inputs.cache-nuget-packages == true
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json', '**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore NuGet packages
+        id: restore_nuget
+        run: dotnet restore "${{ inputs.solution-path }}" ${{ secrets.NUGET_FEED_AUTH_TOKEN && format('--configfile <(echo "<?xml version=\"1.0\" encoding=\"utf-8\"?><configuration><packageSources><clear /><add key=\"github\" value=\"https://nuget.pkg.github.com/YOUR_ORG_OR_USER/index.json\" /><add key=\"nuget.org\" value=\"https://api.nuget.org/v3/index.json\" /></packageSources><packageSourceCredentials><github><add key=\"Username\" value=\"PAT\" /><add key=\"ClearTextPassword\" value=\"{0}\" /></github></packageSourceCredentials></configuration>" | sed "s/{0}/$(echo $NUGET_AUTH_TOKEN)/g" )', secrets.NUGET_FEED_AUTH_TOKEN) || '' }}
+        env:
+          NUGET_AUTH_TOKEN: ${{ secrets.NUGET_FEED_AUTH_TOKEN }}
+        continue-on-error: false
+
+      - name: Build solution/project
+        id: build
+        run: dotnet build "${{ inputs.solution-path }}" --configuration "${{ inputs.build-configuration }}" --no-restore
+        continue-on-error: false
+
+      - name: Run tests
+        id: run_tests
+        if: inputs.run-tests == true
+        run: |
+          TEST_PROJECT_PATH="${{ inputs.test-project-path || inputs.solution-path }}"
+          mkdir -p "${{ inputs.test-results-directory }}"
+          dotnet test "$TEST_PROJECT_PATH" --configuration "${{ inputs.build-configuration }}" --no-build --no-restore \
+            ${{ inputs.test-filter && format('--filter "{0}"', inputs.test-filter) || '' }} \
+            --logger "${{ inputs.test-results-format }};LogFileName=test_results.${{ inputs.test-results-format }}" \
+            --results-directory "${{ inputs.test-results-directory }}"
+        continue-on-error: true # Allow tests to fail and still upload results
+
+      - name: Publish application
+        id: publish_app
+        if: inputs.package-application == true && steps.build.outcome == 'success'
+        run: dotnet publish "${{ inputs.solution-path }}" --configuration "${{ inputs.build-configuration }}" --no-build --no-restore -o "${{ inputs.publish-output-directory }}"
+        continue-on-error: false
+
+      - name: Upload Test Results Artifact
+        id: upload_test_results
+        if: inputs.run-tests == true && inputs.upload-test-results-artifact == true
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name-prefix }}-test-results
+          path: ${{ inputs.test-results-directory }}
+          if-no-files-found: warn # 'warn' or 'ignore' is safer than 'error'
+
+      - name: Upload Build Artifact
+        id: upload_build_artifact
+        if: inputs.package-application == true && inputs.upload-build-artifacts == true && steps.publish_app.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name-prefix }}-app-package
+          path: ${{ inputs.publish-output-directory }}
+          if-no-files-found: warn
+
+      - name: Set Final Status
+        id: set_final_status
+        shell: bash
+        run: |
+          FINAL_STATUS="success"
+          if [[ "${{ steps.restore_nuget.outcome }}" == "failure" || \
+                "${{ steps.build.outcome }}" == "failure" || \
+                ("${{ inputs.run-tests }}" == "true" && "${{ steps.run_tests.outcome }}" == "failure") || \
+                ("${{ inputs.package-application }}" == "true" && "${{ steps.publish_app.outcome }}" == "failure") ]]; then
+            FINAL_STATUS="failure"
+          fi
+          echo "status=$FINAL_STATUS" >> $GITHUB_OUTPUT
+          if [[ "$FINAL_STATUS" == "failure" && "${{ inputs.run-tests }}" == "true" && "${{ steps.run_tests.outcome }}" == "failure" ]]; then
+            echo "::error::Tests failed. See uploaded test results for details."
+          elif [[ "$FINAL_STATUS" == "failure" ]]; then
+            echo "::error::Build, restore, or publish step failed."
+          fi
+        # Always run this step to set the output
+        if: always()

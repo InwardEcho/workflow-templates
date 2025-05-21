@@ -1,0 +1,150 @@
+# Reusable Static Code Analysis Workflow
+# Filename: .github/workflows/reusable-static-code-analysis.yml
+# Purpose: Performs static code analysis using tools like SonarQube or other linters/analyzers.
+
+name: Reusable Static Code Analysis
+
+on:
+  workflow_call:
+    inputs:
+      solution-path:
+        description: 'Path to the .sln or relevant project files for analysis.'
+        required: true
+        type: string
+      fail-on-issues: # More accurately, fail on Quality Gate failure for SonarQube
+        description: 'Whether to fail the workflow if the analysis tool reports issues exceeding a threshold or a quality gate fails.'
+        required: false
+        type: boolean
+        default: true
+      sonarqube-project-key:
+        description: 'SonarQube project key. Often derived from repository name.'
+        required: false # Required if using SonarQube
+        type: string
+        default: ''
+      sonarqube-host-url:
+        description: 'SonarQube server URL.'
+        required: false # Required if using SonarQube
+        type: string
+        default: ''
+      sonarqube-organization:
+        description: 'SonarQube organization key.'
+        required: false # Optional for SonarQube, depends on server setup
+        type: string
+        default: ''
+      dotnet-version-for-scanner:
+        description: '.NET SDK version for SonarScanner for .NET. Ensure it is compatible with your project and SonarScanner version.'
+        required: false
+        type: string
+        default: '7.0.x' # SonarScanner for .NET often works well with a recent LTS or STS .NET SDK
+      extra-scanner-args:
+        description: 'Additional arguments to pass to the SonarScanner for .NET end step or other tools.'
+        required: false
+        type: string
+        default: ''
+      # Add inputs for other SAST tools if needed
+      # sast-tool-name:
+      #   description: "Name of the SAST tool to use (e.g., 'sonarqube', 'custom-linter')"
+      #   required: false
+      #   type: string
+      #   default: 'sonarqube'
+
+    outputs:
+      status:
+        description: "Status of the SAST execution ('success' or 'failure')."
+        value: ${{ jobs.sast_job.outputs.job_status }}
+      analysis-url:
+        description: 'URL to the analysis report (e.g., SonarQube dashboard).'
+        value: ${{ jobs.sast_job.outputs.analysis_url_output }}
+      quality-gate-status:
+        description: 'Status of the SonarQube quality gate (if applicable).'
+        value: ${{ jobs.sast_job.outputs.quality_gate_status_output }}
+
+    secrets:
+      SONAR_TOKEN:
+        description: 'Authentication token for SonarQube.'
+        required: false # Required if using SonarQube
+      # OTHER_SAST_TOOL_API_KEY:
+      #   description: 'API key for other SAST tools if used.'
+      #   required: false
+
+jobs:
+  sast_job:
+    name: Static Analysis
+    runs-on: ubuntu-latest # SonarScanner and many linters run on Linux
+    permissions:
+      contents: read # To checkout code
+      # Add other permissions if the SAST tool needs to interact with GitHub API, e.g., post checks
+
+    outputs:
+      job_status: ${{ steps.set_final_status.outputs.status }}
+      analysis_url_output: ${{ steps.sonarqube_scan.outputs.dashboard-url }} # Specific to SonarQube example
+      quality_gate_status_output: ${{ steps.sonarqube_scan.outputs.quality-gate-status }} # Specific to SonarQube
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # SonarQube benefits from full history for blame information and new code detection
+
+      - name: Setup .NET SDK (for SonarScanner for .NET)
+        # This step is crucial if the SAST tool is SonarScanner for .NET
+        # if: inputs.sast-tool-name == 'sonarqube' # Example if supporting multiple tools
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ inputs.dotnet-version-for-scanner }}
+
+      # SonarQube specific steps
+      # You would have conditional logic here if supporting multiple SAST tools based on an input like `sast-tool-name`
+      - name: Set up SonarQube Scanner
+        # if: inputs.sast-tool-name == 'sonarqube' && inputs.sonarqube-host-url != '' && inputs.sonarqube-project-key != ''
+        if: inputs.sonarqube-host-url != '' && inputs.sonarqube-project-key != '' # Simplified condition
+        uses: sonarsource/sonarqube-scan-action@master # Or a specific version tag
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ inputs.sonarqube-host-url }}
+        with:
+          projectBaseDir: . # Assuming the scanner should run from the root of the checkout
+          args: >
+            /k:"${{ inputs.sonarqube-project-key }}"
+            ${{ inputs.sonarqube-organization && format('/o:"{0}"', inputs.sonarqube-organization) || '' }}
+            /d:sonar.scm.provider=git
+            /d:sonar.dotnet.excludeTestProjects=true
+            /d:sonar.coverage.exclusions=**/Tests/**,**/Test/**
+            ${{ inputs.extra-scanner-args }}
+
+      # Note: The sonarsource/sonarqube-scan-action@master for .NET projects typically handles the begin, build, and end steps.
+      # It expects the build to happen implicitly or be configured.
+      # If your build is complex or needs specific steps before SonarQube's end step, you might need to split this:
+      # 1. SonarScanner for .NET 'begin'
+      # 2. Your custom build command (e.g., calling reusable-build-test-dotnet.yml with test/package false)
+      # 3. SonarScanner for .NET 'end'
+      # However, the composite action `sonarsource/sonarqube-scan-action` tries to simplify this.
+      # It will invoke `dotnet build` itself if it detects a .NET project.
+
+      # Placeholder for other SAST tools
+      # - name: Run Custom Linter / Analyzer
+      #   if: inputs.sast-tool-name == 'custom-linter'
+      #   run: |
+      #     echo "Running custom linter..."
+      #     # Commands for custom linter
+
+      - name: Set Final Status
+        id: set_final_status
+        shell: bash
+        run: |
+          FINAL_STATUS="success"
+          # For SonarQube, the sonarqube-scan-action might fail on quality gate if configured on SonarQube server.
+          # Or, you can check its output if the action provides quality gate status.
+          # The action's documentation should be consulted for how it reports Quality Gate status.
+          # For now, we assume if the previous step (SonarQube scan) failed, it's a failure.
+          # This needs to be more robust based on the actual behavior of the SonarQube action.
+          SONAR_STEP_OUTCOME="${{ steps.sonarqube_scan.outcome || 'skipped' }}" # Get outcome of sonarqube_scan step
+
+          if [[ "$SONAR_STEP_OUTCOME" == "failure" && "${{ inputs.fail-on-issues }}" == "true" ]]; then
+            FINAL_STATUS="failure"
+            echo "::error::Static analysis (SonarQube) failed or Quality Gate condition not met."
+          # elif [[ other SAST tool failed ]]; then
+          #   FINAL_STATUS="failure"
+          fi
+          echo "status=$FINAL_STATUS" >> $GITHUB_OUTPUT
+        if: always()

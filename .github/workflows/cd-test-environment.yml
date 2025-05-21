@@ -1,0 +1,183 @@
+# Continuous Deployment to TEST Environment Workflow
+# Filename: .github/workflows/cd-test-environment.yml
+# Purpose: Deploys a version (validated in DEV) to the TEST environment,
+#          incorporating manual approvals via GitHub Environments.
+#          If successful, it will trigger the PROD CD workflow.
+
+name: CD - TEST Environment
+
+on:
+  workflow_dispatch: # For manual triggering or promotion from DEV
+    inputs:
+      version_to_deploy:
+        description: 'Version to deploy to TEST (e.g., 1.2.3)'
+        required: true
+        type: string
+      source_artifact_name:
+        description: 'Name of the build artifact to download (e.g., release-1.2.3-app-package)'
+        required: true
+        type: string
+  # workflow_run: # Triggered by cd-dev-environment.yml for main branch pipeline
+  #   workflows: ["CD - DEV Environment"] # Name of the cd-dev-environment.yml workflow
+  #   types:
+  #     - completed
+
+permissions:
+  contents: read
+  actions: write       # To trigger cd-prod-environment.yml
+  id-token: write      # For OIDC with cloud providers
+  # deployments: write # If creating GitHub Deployment entities
+
+concurrency:
+  group: ${{ github.workflow }}-test-${{ github.event.inputs.version_to_deploy || github.sha }}
+  cancel-in-progress: false # TEST deployments should ideally complete or be explicitly cancelled
+
+env:
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  # TEST_ENVIRONMENT_URL: ${{ vars.TEST_ENVIRONMENT_URL }}
+
+jobs:
+  prepare_test_deployment_info:
+    name: Prepare TEST Deployment Information
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get_info.outputs.version }}
+      artifact_name: ${{ steps.get_info.outputs.artifact_name }}
+
+    steps:
+      - name: Consolidate Trigger Info
+        id: get_info
+        shell: bash
+        run: |
+          VERSION=""
+          ARTIFACT_NAME=""
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "Triggered by workflow_dispatch for TEST"
+            VERSION="${{ github.event.inputs.version_to_deploy }}"
+            ARTIFACT_NAME="${{ github.event.inputs.source_artifact_name }}"
+          elif [[ "${{ github.event_name }}" == "workflow_run" ]]; then
+            echo "Triggered by workflow_run from workflow: ${{ github.event.workflow_run.name }} for TEST"
+            if [[ "${{ github.event.workflow_run.conclusion }}" == "success" ]]; then
+              echo "::warning::Fetching parameters from workflow_run artifacts for TEST CD is complex."
+              # Placeholder: Logic to download and parse a parameters artifact from the triggering cd-dev-environment run.
+              # This would be similar to the logic discussed for cd-dev-environment.yml itself.
+              echo "::error::Direct parameter passing from workflow_run is not used in this template for TEST. Expecting workflow_dispatch inputs."
+              exit 1 # Or handle differently if workflow_run is the primary trigger for TEST
+            else
+              echo "::error::Triggering DEV CD workflow (${{ github.event.workflow_run.name }}) did not succeed. Halting TEST deployment."
+              exit 1
+            fi
+          fi
+
+          if [[ -z "$VERSION" || -z "$ARTIFACT_NAME" ]]; then
+            echo "::error::Version or Artifact Name is missing for TEST deployment. Cannot proceed."
+            exit 1
+          fi
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "artifact_name=$ARTIFACT_NAME" >> $GITHUB_OUTPUT
+          
+          echo "Deploying Version to TEST: $VERSION"
+          echo "Using Artifact for TEST: $ARTIFACT_NAME"
+
+  deploy_to_test:
+    name: Deploy to TEST Environment
+    runs-on: ubuntu-latest
+    needs: prepare_test_deployment_info
+    if: needs.prepare_test_deployment_info.outputs.version != ''
+    environment:
+      name: Test # This MUST match a configured GitHub Environment for approvals
+      url: ${{ vars.TEST_ENVIRONMENT_URL || format('https://test.example.com/app-{0}', needs.prepare_test_deployment_info.outputs.version) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Application Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.prepare_test_deployment_info.outputs.artifact_name }}
+          path: ./app-to-deploy
+
+      - name: Apply TEST Infrastructure (Terraform)
+        id: terraform_test
+        uses: ./.github/workflows/reusable-iac-terraform.yml
+        with:
+          working-directory: './Infra/test' # Example
+          terraform-command: 'apply'
+          environment: 'test'
+          var-file: 'terraform.test.tfvars' # Example
+          apply-auto-approve: true # Or false if TEST also needs plan review
+        secrets:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID_TEST }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET_TEST }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID_TEST }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID_TEST }}
+
+      - name: Apply TEST Database Migrations
+        id: db_migration_test
+        if: steps.terraform_test.outputs.status == 'success'
+        uses: ./.github/workflows/reusable-database-migration-efcore.yml
+        with:
+          efcore-project-path: 'src/MyProject.DataAccess/MyProject.DataAccess.csproj' # Example
+          environment: 'test'
+          connection-string: ${{ secrets.TEST_DB_CONNECTION_STRING }} # Direct secret passing
+          backup-required: false
+        secrets:
+          _placeholder_for_secret_passing_to_reusable: "Ensure reusable workflow handles this correctly"
+
+
+      - name: Deploy Application to TEST
+        id: app_deploy_test
+        if: steps.db_migration_test.outputs.status == 'success'
+        uses: ./.github/workflows/reusable-deploy-environment.yml
+        with:
+          environment-name: 'test'
+          artifact-path: './app-to-deploy'
+          deployment-target-type: 'azure-app-service' # Example
+          version-being-deployed: ${{ needs.prepare_test_deployment_info.outputs.version }}
+          azure-app-name: ${{ vars.TEST_AZURE_APP_NAME }} # Example
+          # health-check-url: ${{ vars.TEST_HEALTH_CHECK_URL }}
+        secrets:
+          AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS_TEST_APP_SERVICE }}
+
+  trigger_prod_deployment:
+    name: Trigger PROD Deployment
+    runs-on: ubuntu-latest
+    needs: [prepare_test_deployment_info, deploy_to_test]
+    if: success() && needs.deploy_to_test.result == 'success'
+
+    steps:
+      - name: Dispatch PROD Deployment Workflow
+        uses: benc-uk/workflow-dispatch@v1
+        with:
+          workflow: cd-prod-environment.yml
+          token: ${{ secrets.WORKFLOW_DISPATCH_PAT }}
+          inputs: |
+            {
+              "version_to_deploy": "${{ needs.prepare_test_deployment_info.outputs.version }}",
+              "source_artifact_name": "${{ needs.prepare_test_deployment_info.outputs.artifact_name }}"
+            }
+          ref: ${{ github.ref }} # Or main branch ref
+
+  report_test_cd_status:
+    name: Report TEST CD Status
+    runs-on: ubuntu-latest
+    needs: [prepare_test_deployment_info, deploy_to_test]
+    if: always()
+
+    steps:
+      - name: Notify TEST CD Status
+        uses: ./.github/workflows/reusable-observability-hooks.yml
+        with:
+          status: ${{ needs.deploy_to_test.result }}
+          workflow-name: "${{ github.workflow }} - TEST"
+          environment-name: 'Test'
+          version-deployed: ${{ needs.prepare_test_deployment_info.outputs.version }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          message-details: "Deployment to TEST environment status: ${{ needs.deploy_to_test.result }}"
+          notification-channel: 'slack'
+        secrets:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL_DEPLOYMENTS }}

@@ -1,0 +1,333 @@
+# Reusable Canary Deployment Workflow
+# Filename: .github/workflows/reusable-canary-deployment.yml
+# Purpose: Implements a canary release strategy for applications.
+
+name: Reusable Canary Deployment
+
+on:
+  workflow_call:
+    inputs:
+      environment-name:
+        description: 'Base environment name (e.g., prod). Canary might be prod-canary or similar.'
+        required: true
+        type: string
+      artifact-path:
+        description: 'Path to the application artifact to deploy (e.g., ./app-to-deploy).'
+        required: true
+        type: string
+      version:
+        description: 'Version string of the application being deployed.'
+        required: true
+        type: string
+      canary-percentage:
+        description: 'Percentage of traffic/users to route to the canary version.'
+        required: false
+        type: number
+        default: 10
+      observation-period-minutes:
+        description: 'Duration in minutes to monitor the canary deployment.'
+        required: false
+        type: number
+        default: 15 # Shorter default for CI, can be overridden
+      health-check-url-canary: # URL for the canary instance
+        description: 'Health check URL for the canary instance.'
+        required: true
+        type: string
+      health-check-url-primary: # URL for the primary production instance (for comparison or after full rollout)
+        description: 'Health check URL for the primary production instance.'
+        required: false # May not always be needed during canary phase itself
+        type: string
+      # Deployment target specific inputs - these will determine how traffic is shifted
+      # and how canary/primary instances are managed.
+      deployment-target-type:
+        description: "Type of deployment target (e.g., 'azure-app-service-slots', 'kubernetes-ingress', 'custom')."
+        required: true
+        type: string
+      # Example for Azure App Service with Slots
+      azure-app-name:
+        description: 'Name of the Azure App Service.'
+        required: false # Required if target is azure-app-service-slots
+        type: string
+      azure-canary-slot-name:
+        description: 'Name of the Azure App Service slot for canary deployment.'
+        required: false # Required if target is azure-app-service-slots
+        type: string
+        default: 'staging' # Or a dedicated 'canary' slot
+      azure-production-slot-name:
+        description: 'Name of the Azure App Service production slot.'
+        required: false # Required if target is azure-app-service-slots
+        type: string
+        default: 'production'
+      # Example for Kubernetes
+      # kubernetes-deployment-name:
+      #   required: false
+      # kubernetes-namespace:
+      #   required: false
+      # kubernetes-service-name: # For traffic splitting via service mesh or ingress
+      #   required: false
+      rollback-on-failure:
+        description: 'Whether to attempt an automated rollback if canary fails.'
+        required: false
+        type: boolean
+        default: true
+      # Inputs to pass to reusable-deploy-environment.yml if used internally
+      deploy-reusable-workflow-inputs-canary: # JSON string of inputs for canary deploy
+        description: 'JSON string of inputs for reusable-deploy-environment for canary slice.'
+        required: false
+        type: string
+        default: '{}'
+      deploy-reusable-workflow-inputs-primary: # JSON string of inputs for primary deploy
+        description: 'JSON string of inputs for reusable-deploy-environment for full rollout.'
+        required: false
+        type: string
+        default: '{}'
+
+    outputs:
+      status:
+        description: "Overall status of the canary deployment ('success', 'failure', 'rolled_back')."
+        value: ${{ jobs.finalize_canary.outputs.final_status || jobs.deploy_canary_slice.outputs.job_status }}
+      canary_health_status:
+        description: "Health status of the canary after observation ('healthy', 'unhealthy', 'skipped')."
+        value: ${{ jobs.monitor_canary.outputs.canary_health || 'skipped' }}
+      deployment_url: # URL of the fully rolled out application
+        description: "URL of the production application after successful canary."
+        value: ${{ jobs.promote_to_primary.outputs.deployment_url || '' }}
+
+
+    secrets:
+      # Secrets needed for deploying to canary and primary, and for traffic management
+      AZURE_CREDENTIALS: # Example for Azure
+        required: false
+      # KUBE_CONFIG_DATA: # Example for K8s
+      #   required: false
+      # CUSTOM_DEPLOY_SECRETS: # For custom deployment logic
+      #   required: false
+
+jobs:
+  deploy_canary_slice:
+    name: Deploy Canary Slice - ${{ inputs.version }}
+    runs-on: ubuntu-latest
+    outputs:
+      job_status: ${{ steps.set_deploy_canary_status.outputs.status }}
+      # Potentially output the specific URL of the canary instance if discoverable
+      canary_instance_url: ${{ steps.deploy_canary.outputs.deployment_url }}
+
+    steps:
+      - name: Checkout (if deploy scripts are in repo)
+        uses: actions/checkout@v4
+
+      - name: Deploy to Canary Instance/Slot
+        id: deploy_canary
+        # This step will vary greatly based on inputs.deployment-target-type
+        # Option 1: Call reusable-deploy-environment.yml
+        # uses: ./.github/workflows/reusable-deploy-environment.yml
+        # with:
+        #   environment-name: ${{ inputs.environment-name }}-canary
+        #   artifact-path: ${{ inputs.artifact-path }}
+        #   version-being-deployed: ${{ inputs.version }}
+        #   # Pass through relevant inputs from deploy-reusable-workflow-inputs-canary
+        #   # For Azure App Service Slots:
+        #   deployment-target-type: 'azure-app-service'
+        #   azure-app-name: ${{ inputs.azure-app-name }}
+        #   azure-slot-name: ${{ inputs.azure-canary-slot-name }}
+        #   # ... other inputs from deploy-reusable-workflow-inputs-canary
+        # secrets:
+        #   AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+        run: |
+          echo "Deploying version ${{ inputs.version }} to canary slice for ${{ inputs.environment-name }}..."
+          echo "Target type: ${{ inputs.deployment-target-type }}"
+          echo "Artifact path: ${{ inputs.artifact-path }}"
+          echo "Canary percentage: ${{ inputs.canary-percentage }}%"
+          # Add specific deployment logic here based on target type
+          # For Azure App Service Slots:
+          if [[ "${{ inputs.deployment-target-type }}" == "azure-app-service-slots" ]]; then
+            echo "Using Azure App Service Slot deployment for canary..."
+            # az webapp deployment slot create --name ${{ inputs.azure-app-name }} --resource-group <rg> --slot ${{ inputs.azure-canary-slot-name }} --configuration-source ${{ inputs.azure-production-slot-name }}
+            # az webapp deployment source config-zip --name ${{ inputs.azure-app-name }} --resource-group <rg> --slot ${{ inputs.azure-canary-slot-name }} --src ${{ inputs.artifact-path }}
+            # az webapp traffic-routing set --resource-group <rg> --name ${{ inputs.azure-app-name }} --distribution ${{ inputs.azure-canary-slot-name }}=${{ inputs.canary-percentage }}
+            echo "::warning::Azure App Service slot deployment logic placeholder."
+            # This step should output the actual URL of the canary instance if possible
+            # For now, using the input health check URL as a proxy
+            echo "deployment_url=${{ inputs.health-check-url-canary }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ inputs.deployment-target-type }}" == "kubernetes-ingress" ]]; then
+            echo "::warning::Kubernetes Ingress/Service Mesh canary deployment logic placeholder."
+          else
+            echo "::error::Unsupported canary deployment target type: ${{ inputs.deployment-target-type }}"
+            exit 1
+          fi
+          echo "Canary deployment initiated."
+        env: # Pass necessary secrets for deployment
+          AZURE_CREDENTIALS_ENV: ${{ secrets.AZURE_CREDENTIALS }} # Example
+        continue-on-error: false
+
+      - name: Set Deploy Canary Status
+        id: set_deploy_canary_status
+        if: always()
+        run: echo "status=${{ steps.deploy_canary.outcome }}" >> $GITHUB_OUTPUT
+
+  monitor_canary:
+    name: Monitor Canary Health
+    runs-on: ubuntu-latest
+    needs: deploy_canary_slice
+    if: needs.deploy_canary_slice.outputs.job_status == 'success'
+    outputs:
+      canary_health: ${{ steps.health_check_script.outputs.health_status }} # 'healthy' or 'unhealthy'
+
+    steps:
+      - name: Monitor Canary Instance
+        id: health_check_script
+        shell: bash
+        run: |
+          echo "Monitoring canary at ${{ inputs.health-check-url-canary }} for ${{ inputs.observation-period-minutes }} minutes..."
+          END_TIME=$(( $(date +%s) + ${{ inputs.observation-period-minutes }} * 60 ))
+          HEALTHY="true"
+          while [[ $(date +%s) -lt $END_TIME ]]; do
+            if curl --output /dev/null --silent --head --fail --max-time 10 "${{ inputs.health-check-url-canary }}"; then
+              echo "Canary health check PASSED at $(date)"
+            else
+              echo "::error::Canary health check FAILED at $(date) for URL: ${{ inputs.health-check-url-canary }}"
+              HEALTHY="false"
+              break # Exit loop on first failure
+            fi
+            # In a real scenario, you might also query metrics here (Prometheus, App Insights, etc.)
+            # and check against thresholds.
+            sleep 60 # Check every minute
+          done
+
+          if [[ "$HEALTHY" == "true" ]]; then
+            echo "Canary monitoring completed. Canary is healthy."
+            echo "health_status=healthy" >> $GITHUB_OUTPUT
+          else
+            echo "Canary monitoring completed. Canary is unhealthy."
+            echo "health_status=unhealthy" >> $GITHUB_OUTPUT
+            # No exit 1 here, let the next job decide based on health_status
+          fi
+        continue-on-error: false # If the script itself fails (not just health check), it's an error
+
+  promote_to_primary: # Full rollout
+    name: Promote to Primary (Full Rollout)
+    runs-on: ubuntu-latest
+    needs: monitor_canary
+    if: needs.monitor_canary.outputs.canary_health == 'healthy'
+    outputs:
+      job_status: ${{ steps.set_promote_status.outputs.status }}
+      deployment_url: ${{ steps.deploy_primary.outputs.deployment_url }}
+
+    steps:
+      - name: Promote Canary to 100%
+        id: deploy_primary
+        # This step will vary greatly based on inputs.deployment-target-type
+        # Option 1: Call reusable-deploy-environment.yml for the primary/production slot/target
+        # uses: ./.github/workflows/reusable-deploy-environment.yml
+        # with:
+        #   environment-name: ${{ inputs.environment-name }} # The main environment
+        #   artifact-path: ${{ inputs.artifact-path }} # The same artifact
+        #   version-being-deployed: ${{ inputs.version }}
+        #   # Pass through relevant inputs from deploy-reusable-workflow-inputs-primary
+        #   # For Azure App Service Slots:
+        #   deployment-target-type: 'azure-app-service'
+        #   azure-app-name: ${{ inputs.azure-app-name }}
+        #   azure-slot-name: ${{ inputs.azure-production-slot-name }} # Target production
+        # secrets:
+        #   AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+        run: |
+          echo "Promoting version ${{ inputs.version }} to 100% for ${{ inputs.environment-name }}..."
+          # Add specific promotion logic here
+          # For Azure App Service Slots:
+          if [[ "${{ inputs.deployment-target-type }}" == "azure-app-service-slots" ]]; then
+            echo "Swapping canary slot to production and routing 100% traffic..."
+            # az webapp deployment slot swap --name ${{ inputs.azure-app-name }} --resource-group <rg> --slot ${{ inputs.azure-canary-slot-name }} --target-slot ${{ inputs.azure-production-slot-name }}
+            # az webapp traffic-routing set --resource-group <rg> --name ${{ inputs.azure-app-name }} --distribution ${{ inputs.azure-production-slot-name }}=100
+            echo "::warning::Azure App Service slot promotion logic placeholder."
+            # This step should output the final production URL
+            echo "deployment_url=${{ inputs.health-check-url-primary || format('https://{0}.azurewebsites.net', inputs.azure-app-name) }}" >> $GITHUB_OUTPUT
+          elif [[ "${{ inputs.deployment-target-type }}" == "kubernetes-ingress" ]]; then
+            echo "::warning::Kubernetes Ingress/Service Mesh promotion logic placeholder."
+          else
+            echo "::error::Unsupported promotion target type: ${{ inputs.deployment-target-type }}"
+            exit 1
+          fi
+          echo "Promotion to primary completed."
+        env:
+          AZURE_CREDENTIALS_ENV: ${{ secrets.AZURE_CREDENTIALS }} # Example
+        continue-on-error: false
+
+      - name: Set Promote Status
+        id: set_promote_status
+        if: always()
+        run: echo "status=${{ steps.deploy_primary.outcome }}" >> $GITHUB_OUTPUT
+
+  rollback_canary:
+    name: Rollback Canary
+    runs-on: ubuntu-latest
+    needs: monitor_canary
+    if: always() && needs.monitor_canary.outputs.canary_health == 'unhealthy' && inputs.rollback-on-failure == true
+    outputs:
+      job_status: ${{ steps.set_rollback_status.outputs.status }}
+
+    steps:
+      - name: Perform Rollback
+        id: perform_rollback
+        run: |
+          echo "::error::Canary version ${{ inputs.version }} for ${{ inputs.environment-name }} failed health checks. Initiating rollback."
+          # Add specific rollback logic here
+          # For Azure App Service Slots:
+          if [[ "${{ inputs.deployment-target-type }}" == "azure-app-service-slots" ]]; then
+            echo "Rolling back Azure App Service: Routing 0% traffic to canary slot and/or deleting/stopping canary slot."
+            # az webapp traffic-routing set --resource-group <rg> --name ${{ inputs.azure-app-name }} --distribution ${{ inputs.azure-canary-slot-name }}=0
+            # Optionally, delete or stop the canary slot if it was created dynamically
+            # az webapp deployment slot delete --name ${{ inputs.azure-app-name }} --resource-group <rg> --slot ${{ inputs.azure-canary-slot-name }}
+            echo "::warning::Azure App Service slot rollback logic placeholder."
+          elif [[ "${{ inputs.deployment-target-type }}" == "kubernetes-ingress" ]]; then
+            echo "::warning::Kubernetes Ingress/Service Mesh rollback logic placeholder."
+          else
+            echo "::error::Unsupported rollback target type: ${{ inputs.deployment-target-type }}"
+            exit 1 # Fail if rollback cannot be determined
+          fi
+          echo "Rollback procedure initiated/completed."
+        env:
+          AZURE_CREDENTIALS_ENV: ${{ secrets.AZURE_CREDENTIALS }} # Example
+        continue-on-error: false # Rollback failure is critical
+
+      - name: Set Rollback Status
+        id: set_rollback_status
+        if: always()
+        run: echo "status=${{ steps.perform_rollback.outcome }}" >> $GITHUB_OUTPUT
+
+  finalize_canary: # This job determines the overall output of the canary workflow
+    name: Finalize Canary Deployment
+    runs-on: ubuntu-latest
+    needs: [deploy_canary_slice, monitor_canary, promote_to_primary, rollback_canary]
+    if: always() # Ensure this job always runs to set the final status
+    outputs:
+      final_status: ${{ steps.determine_final_outcome.outputs.status }}
+
+    steps:
+      - name: Determine Final Outcome
+        id: determine_final_outcome
+        shell: bash
+        run: |
+          FINAL_CANARY_STATUS="failure" # Default to failure
+          echo "Deploy Canary Slice job status: ${{ needs.deploy_canary_slice.result }}"
+          echo "Monitor Canary job status: ${{ needs.monitor_canary.result }}"
+          echo "Monitor Canary health output: ${{ needs.monitor_canary.outputs.canary_health }}"
+          echo "Promote to Primary job status: ${{ needs.promote_to_primary.result }}"
+          echo "Rollback Canary job status: ${{ needs.rollback_canary.result }}"
+
+          if [[ "${{ needs.promote_to_primary.result }}" == "success" ]]; then
+            FINAL_CANARY_STATUS="success"
+          elif [[ "${{ needs.rollback_canary.result }}" == "success" && "${{ inputs.rollback-on-failure }}" == "true" ]]; then
+            FINAL_CANARY_STATUS="rolled_back"
+            echo "::error::Canary deployment was rolled back."
+          elif [[ "${{ needs.monitor_canary.outputs.canary_health }}" == "unhealthy" && "${{ inputs.rollback-on-failure }}" == "false" ]]; then
+            FINAL_CANARY_STATUS="failure" # Failed, no rollback attempted or rollback itself failed
+            echo "::error::Canary was unhealthy, and rollback was not enabled or failed."
+          elif [[ "${{ needs.deploy_canary_slice.result }}" == "failure" ]]; then
+            FINAL_CANARY_STATUS="failure"
+            echo "::error::Initial canary deployment failed."
+          else
+            # Catch-all for other unexpected states
+            echo "::error::Canary deployment ended in an indeterminate or failed state."
+            FINAL_CANARY_STATUS="failure"
+          fi
+          echo "status=$FINAL_CANARY_STATUS" >> $GITHUB_OUTPUT

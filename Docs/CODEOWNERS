@@ -1,0 +1,54 @@
+# This is a CODEOWNERS file.
+# Lines starting with '#' are comments.
+# Each line is a file pattern followed by one or more owners.
+
+# Order matters: the last matching pattern takes the most precedence.
+# Wildcards can be used.
+
+# Default owners for all files not covered by other rules (optional)
+# * @your-default-review-team
+
+# Infrastructure changes require DevOps approval
+/infrastructure/                           @placeholder-devops-team
+terraform/                                 @placeholder-devops-team
+*.tf                                       @placeholder-devops-team
+*.tfvars                                   @placeholder-devops-team
+
+# Security configurations require Security team approval
+/src/*/Security/                           @placeholder-security-officers
+app.config                                 @placeholder-security-officers
+web.config                                 @placeholder-security-officers
+appsettings*.json                          @placeholder-security-officers # Covers appsettings.json, appsettings.Development.json etc.
+**/secret-management/*                     @placeholder-security-officers
+
+# Database changes (schema, migrations) require DBA or database team approval
+/src/*/Data/                               @placeholder-db-admins # Assuming a 'db-admins' team slug
+/src/*/Migrations/                         @placeholder-db-admins
+**/database/migrations/                    @placeholder-db-admins
+
+# Core business logic might require senior developers or architects
+/src/*/Core/                               @placeholder-senior-developers @placeholder-architects
+/src/*/Services/                           @placeholder-senior-developers
+/src/*/BusinessLogic/                      @placeholder-senior-developers
+
+# UI components might have specific UI team owners
+/src/*/ClientApp/                          @placeholder-ui-team # Assuming a 'ui-team' slug
+/src/*/Components/                         @placeholder-ui-team
+
+# Documentation changes
+/docs/                                     @placeholder-tech-writers # Assuming a 'tech-writers' team slug
+*.md                                       @placeholder-tech-writers @placeholder-product-owners # Product owners might also review markdown docs
+
+# Workflow files and GitHub specific configurations
+/.github/                                  @placeholder-release-managers @placeholder-devops-team
+
+# Specific critical files
+**/Startup.cs                              @placeholder-architects @placeholder-tech-leads
+**/Program.cs                              @placeholder-architects @placeholder-tech-leads
+
+# You can also assign individual users:
+# /src/critical-module/critical-file.cs    @githubusername1 @githubusername2
+
+# Make sure the team slugs used here (e.g., @placeholder-devops-team)
+# correspond to actual team slugs in your GitHub organization.
+# These teams should have write access to the repository to be assignable as code owners.

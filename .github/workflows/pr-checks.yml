@@ -1,0 +1,125 @@
+# Pull Request Validation Workflow
+# Filename: .github/workflows/pr-checks.yml
+# Purpose: Validates code changes upon pull request creation or update against the default branch.
+
+name: PR Checks
+
+on:
+  pull_request:
+    branches:
+      - main # Replace with your organization's default branch name if different
+      # - master # Uncomment if master is your default branch
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch: # Allows manual triggering for testing if needed
+
+permissions:
+  contents: read      # To checkout code
+  pull-requests: write # To post comments (if observability hook uses it)
+  actions: read        # To read workflow run information (e.g., for run URL)
+  security-events: write # For CodeQL to upload SARIF results
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  validate_pr:
+    name: Validate Pull Request
+    runs-on: ubuntu-latest
+    outputs:
+      build_test_status: ${{ steps.build_test.outputs.status }}
+      security_scan_status: ${{ steps.security_scan.outputs.status }}
+      sast_status: ${{ steps.sast.outputs.status }}
+      overall_pr_check_status: ${{ steps.final_pr_status_check.outputs.overall_status }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            6.0.x
+            7.0.x
+            8.0.x
+
+      - name: Build and Test
+        id: build_test
+        uses: ./.github/workflows/reusable-build-test-dotnet.yml
+        with:
+          solution-path: '**/*.sln'
+          build-configuration: 'Release'
+          dotnet-version-to-use: '8.0.x'
+          run-tests: true
+          test-filter: ''
+          artifact-name-prefix: 'pr-${{ github.event.pull_request.number || github.run_id }}'
+          package-application: false
+          upload-build-artifacts: false
+          upload-test-results-artifact: true
+
+      - name: Run GitHub Security Checks (CodeQL)
+        id: security_scan
+        if: always()
+        uses: ./.github/workflows/reusable-security-github.yml
+        with:
+          enable-codeql: true
+          codeql-language: 'csharp'
+          fail-on-codeql-error: false
+          fail-on-codeql-severity: 'warning'
+
+      - name: Run Static Code Analysis (e.g., SonarQube)
+        id: sast
+        if: always()
+        uses: ./.github/workflows/reusable-static-code-analysis.yml
+        with:
+          solution-path: '**/*.sln'
+          fail-on-issues: true
+          sonarqube-project-key: ${{ vars.SONAR_PROJECT_KEY_PREFIX }}${{ github.event.repository.name }}
+          sonarqube-host-url: ${{ vars.SONAR_HOST_URL }}
+        secrets:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+
+      - name: Determine Overall PR Status
+        id: final_pr_status_check
+        if: always()
+        shell: bash
+        run: |
+          OVERALL_STATUS="success"
+          echo "Build/Test Status: ${{ steps.build_test.outputs.status }}"
+          echo "Security Scan Status: ${{ steps.security_scan.outputs.status }}"
+          echo "SAST Status: ${{ steps.sast.outputs.status }}"
+
+          if [[ "${{ steps.build_test.outputs.status }}" == "failure" || \
+                "${{ steps.security_scan.outputs.status }}" == "failure" || \
+                "${{ steps.sast.outputs.status }}" == "failure" ]]; then
+            OVERALL_STATUS="failure"
+          fi
+          echo "overall_status=$OVERALL_STATUS" >> $GITHUB_OUTPUT
+
+  report_pr_status:
+    name: Report PR Check Status
+    runs-on: ubuntu-latest
+    needs: [validate_pr]
+    if: always()
+
+    steps:
+      - name: Notify PR Check Status
+        uses: ./.github/workflows/reusable-observability-hooks.yml
+        with:
+          status: ${{ needs.validate_pr.outputs.overall_pr_check_status }}
+          workflow-name: "${{ github.workflow }} (PR #${{ github.event.pull_request.number }})"
+          pr-number: ${{ github.event.pull_request.number }}
+          commit-sha: ${{ github.event.pull_request.head.sha }}
+          branch-name: ${{ github.head_ref }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          message-details: |
+            Build & Test: `${{ needs.validate_pr.outputs.build_test_status }}`
+            GitHub Security (CodeQL): `${{ needs.validate_pr.outputs.security_scan_status }}`
+            Static Analysis (SonarQube): `${{ needs.validate_pr.outputs.sast_status }}`
+          notification-channel: 'github-pr-comment'
+          github-pr-comment-header: "PR Validation Summary"
+        secrets:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

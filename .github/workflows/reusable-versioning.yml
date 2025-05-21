@@ -1,0 +1,182 @@
+# Reusable Versioning Workflow
+# Filename: .github/workflows/reusable-versioning.yml
+# Purpose: Calculates application versions based on different strategies, primarily GitVersion.
+
+name: Reusable Versioning
+
+on:
+  workflow_call:
+    inputs:
+      strategy:
+        description: "Versioning strategy ('gitversion', 'tag_based', 'run_number_semantic'). Currently, only 'gitversion' is fully implemented."
+        required: false
+        type: string
+        default: 'gitversion'
+      prerelease-suffix-override: # For GitVersion, this might be used if GitVersion's calculated suffix isn't desired, or to append.
+        description: 'A specific suffix to use for pre-releases. Behavior depends on the strategy.'
+        required: false
+        type: string
+        default: ''
+      gitversion-config-file:
+        description: 'Path to GitVersion.yml configuration file if strategy is gitversion.'
+        required: false
+        type: string
+        default: 'GitVersion.yml' # Assumes GitVersion.yml is in the root if used
+      fetch-depth:
+        description: 'Fetch depth for checkout. 0 for full history (recommended for GitVersion).'
+        required: false
+        type: number # Changed to number as per typical usage
+        default: 0
+      default-version: # Used if other strategies fail or for initial seeding
+        description: 'Default version if no tags are found or other strategies fail.'
+        required: false
+        type: string
+        default: '0.1.0-alpha' # A sensible default for initial development
+      # github-ref: # No longer explicitly needed as input, can use github.ref directly in steps
+      #   description: 'The github.ref from the caller, used to infer branch type if needed.'
+      #   required: true
+      #   type: string
+
+    outputs:
+      calculated-version:
+        description: 'The full calculated version string (e.g., "1.2.3", "1.2.3-alpha.4").'
+        value: ${{ jobs.calculate_version_job.outputs.full_version_output }}
+      major:
+        description: 'Major version part.'
+        value: ${{ jobs.calculate_version_job.outputs.major_output }}
+      minor:
+        description: 'Minor version part.'
+        value: ${{ jobs.calculate_version_job.outputs.minor_output }}
+      patch:
+        description: 'Patch version part.'
+        value: ${{ jobs.calculate_version_job.outputs.patch_output }}
+      prerelease-tag:
+        description: 'Pre-release tag (e.g., "alpha.4", "beta.fix.1").'
+        value: ${{ jobs.calculate_version_job.outputs.prerelease_tag_output }}
+      build-metadata: # Often includes commit SHA or other build-specific info
+        description: 'Build metadata part of the version.'
+        value: ${{ jobs.calculate_version_job.outputs.build_metadata_output }}
+      is-prerelease:
+        description: 'Boolean indicating if the version is a pre-release.'
+        value: ${{ jobs.calculate_version_job.outputs.is_prerelease_output }}
+      semver:
+        description: 'The semantic version (Major.Minor.Patch).'
+        value: ${{ jobs.calculate_version_job.outputs.semver_output }}
+      assembly-semver:
+        description: 'Assembly Semantic Version (Major.Minor.Patch.0 for releases, Major.Minor.Patch.Revision for pre-releases if applicable by GitVersion).'
+        value: ${{ jobs.calculate_version_job.outputs.assembly_semver_output }}
+      informational-version:
+        description: 'Full informational version, often includes commit SHA.'
+        value: ${{ jobs.calculate_version_job.outputs.informational_version_output }}
+
+jobs:
+  calculate_version_job:
+    name: Calculate Version
+    runs-on: ubuntu-latest
+    outputs:
+      full_version_output: ${{ steps.gitversion_execute.outputs.fullSemVer || steps.set_default_version.outputs.full_version_output }}
+      major_output: ${{ steps.gitversion_execute.outputs.major || steps.set_default_version.outputs.major_output }}
+      minor_output: ${{ steps.gitversion_execute.outputs.minor || steps.set_default_version.outputs.minor_output }}
+      patch_output: ${{ steps.gitversion_execute.outputs.patch || steps.set_default_version.outputs.patch_output }}
+      prerelease_tag_output: ${{ steps.gitversion_execute.outputs.preReleaseTag || steps.set_default_version.outputs.prerelease_tag_output }}
+      build_metadata_output: ${{ steps.gitversion_execute.outputs.buildMetaData || steps.set_default_version.outputs.build_metadata_output }}
+      is_prerelease_output: ${{ steps.determine_prerelease_flag.outputs.is_prerelease }}
+      semver_output: ${{ steps.gitversion_execute.outputs.majorMinorPatch || steps.set_default_version.outputs.semver_output }}
+      assembly_semver_output: ${{ steps.gitversion_execute.outputs.assemblySemVer || steps.set_default_version.outputs.assembly_semver_output }}
+      informational_version_output: ${{ steps.gitversion_execute.outputs.informationalVersion || steps.set_default_version.outputs.informational_version_output }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: ${{ inputs.fetch-depth }}
+
+      - name: Install GitVersion
+        if: inputs.strategy == 'gitversion'
+        uses: gittools/actions/gitversion/setup@v1.1.1 # Use a specific version
+        with:
+          versionSpec: '5.x' # Specify major version of GitVersion
+
+      - name: Execute GitVersion
+        if: inputs.strategy == 'gitversion'
+        id: gitversion_execute # id for accessing outputs
+        uses: gittools/actions/gitversion/execute@v1.1.1
+        with:
+          useConfigFile: true
+          configFilePath: ${{ inputs.gitversion-config-file }}
+          # Additional arguments can be passed if needed via `additionalArguments`
+          # Example: overridebranchname if github.ref is not what GitVersion expects
+          # overrideconfig: # Example to dynamically adjust config based on prerelease-suffix-override
+          #   ${{ inputs.prerelease-suffix-override != '' && format('tag-prefix: "[vV]?{0}-"', inputs.prerelease-suffix-override) || '' }}
+
+      # Placeholder for 'tag_based' strategy
+      - name: Calculate version from tags (Placeholder)
+        if: inputs.strategy == 'tag_based'
+        id: tag_based_version
+        run: |
+          echo "::warning::'tag_based' versioning strategy is not fully implemented yet."
+          # Add logic here: git describe --tags --abbrev=0, increment, handle prerelease-suffix-override
+          echo "fullSemVer=${{ inputs.default-version }}" >> $GITHUB_OUTPUT 
+          # Set other version part outputs similarly
+
+      # Placeholder for 'run_number_semantic' strategy
+      - name: Calculate version from run number (Placeholder)
+        if: inputs.strategy == 'run_number_semantic'
+        id: run_number_version
+        run: |
+          echo "::warning::'run_number_semantic' versioning strategy is not fully implemented yet."
+          # Add logic here: use a base version + github.run_number, handle prerelease-suffix-override
+          BASE_VERSION=$(echo "${{ inputs.default-version }}" | cut -d'-' -f1) # Get part before any hyphen
+          VERSION="$BASE_VERSION.${{ github.run_number }}"
+          if [[ "${{ inputs.prerelease-suffix-override }}" != "" ]]; then
+            VERSION="$VERSION-${{ inputs.prerelease-suffix-override }}"
+          fi
+          echo "fullSemVer=$VERSION" >> $GITHUB_OUTPUT
+          # Set other version part outputs similarly
+
+      - name: Set Default Version if strategy failed or not GitVersion
+        id: set_default_version
+        if: steps.gitversion_execute.outputs.fullSemVer == '' # If GitVersion didn't run or produce output
+        shell: bash
+        run: |
+          VERSION="${{ inputs.default-version }}"
+          MAJOR=$(echo $VERSION | cut -d. -f1)
+          MINOR=$(echo $VERSION | cut -d. -f2)
+          PATCH_PART=$(echo $VERSION | cut -d. -f3) # e.g., 0-alpha
+          PATCH=$(echo $PATCH_PART | cut -d'-' -f1)
+          PRERELEASE_TAG=$(echo $PATCH_PART | cut -d'-' -f2-) # Gets everything after the first hyphen in PATCH_PART
+          if [[ "$PRERELEASE_TAG" == "$PATCH" ]]; then PRERELEASE_TAG=""; fi # If no hyphen, it's not a prerelease tag
+
+          echo "full_version_output=$VERSION" >> $GITHUB_OUTPUT
+          echo "major_output=$MAJOR" >> $GITHUB_OUTPUT
+          echo "minor_output=$MINOR" >> $GITHUB_OUTPUT
+          echo "patch_output=$PATCH" >> $GITHUB_OUTPUT
+          echo "prerelease_tag_output=$PRERELEASE_TAG" >> $GITHUB_OUTPUT
+          echo "build_metadata_output=" >> $GITHUB_OUTPUT # Default to empty
+          echo "semver_output=$MAJOR.$MINOR.$PATCH" >> $GITHUB_OUTPUT
+          echo "assembly_semver_output=$MAJOR.$MINOR.$PATCH.0" >> $GITHUB_OUTPUT
+          echo "informational_version_output=$VERSION" >> $GITHUB_OUTPUT
+
+
+      - name: Determine IsPreRelease Flag
+        id: determine_prerelease_flag
+        shell: bash
+        run: |
+          IS_PRERELEASE="false"
+          PR_TAG="${{ steps.gitversion_execute.outputs.preReleaseTag || steps.set_default_version.outputs.prerelease_tag_output }}"
+          if [[ "$PR_TAG" != "" && "$PR_TAG" != "null" ]]; then # GitVersion might output "null" as a string
+            IS_PRERELEASE="true"
+          fi
+          echo "is_prerelease=$IS_PRERELEASE" >> $GITHUB_OUTPUT
+        if: always() # Ensure this runs to set the output
+
+      - name: Echo Final Version Details
+        run: |
+          echo "Calculated Version: ${{ steps.gitversion_execute.outputs.fullSemVer || steps.set_default_version.outputs.full_version_output }}"
+          echo "Major: ${{ steps.gitversion_execute.outputs.major || steps.set_default_version.outputs.major_output }}"
+          echo "Minor: ${{ steps.gitversion_execute.outputs.minor || steps.set_default_version.outputs.minor_output }}"
+          echo "Patch: ${{ steps.gitversion_execute.outputs.patch || steps.set_default_version.outputs.patch_output }}"
+          echo "PreRelease Tag: ${{ steps.gitversion_execute.outputs.preReleaseTag || steps.set_default_version.outputs.prerelease_tag_output }}"
+          echo "Is PreRelease: ${{ steps.determine_prerelease_flag.outputs.is_prerelease }}"
+          echo "AssemblySemVer: ${{ steps.gitversion_execute.outputs.assemblySemVer || steps.set_default_version.outputs.assembly_semver_output }}"
+          echo "InformationalVersion: ${{ steps.gitversion_execute.outputs.informationalVersion || steps.set_default_version.outputs.informational_version_output }}"

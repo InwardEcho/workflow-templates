@@ -1,0 +1,205 @@
+# Reusable Infrastructure as Code (IaC) Terraform Workflow
+# Filename: .github/workflows/reusable-iac-terraform.yml
+# Purpose: Provides standardized steps for integrating with Terraform for infrastructure management.
+
+name: Reusable IaC Terraform
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: 'Terraform working directory relative to the repository root.'
+        required: true
+        type: string
+      terraform-command:
+        description: "Terraform command to execute ('init', 'validate', 'plan', 'apply', 'destroy')."
+        required: true
+        type: string
+      environment:
+        description: 'Target environment name (e.g., dev, test, prod). Used for workspace selection and var files.'
+        required: true
+        type: string
+      plan-output-file:
+        description: 'Filename for the Terraform plan output. Used by `plan` and `apply` (if applying a plan).'
+        required: false
+        type: string
+        default: 'tfplan.out'
+      backend-config-file:
+        description: 'Path to a backend configuration file (e.g., backend-dev.hcl or backend-dev.tfvars).'
+        required: false
+        type: string
+        default: '' # Example: backend-${{ inputs.environment }}.config
+      var-file:
+        description: 'Path to a specific .tfvars file for the environment (e.g., env-dev.tfvars).'
+        required: false
+        type: string
+        default: '' # Example: terraform.${{ inputs.environment }}.tfvars
+      apply-auto-approve:
+        description: 'Whether to auto-approve terraform apply. Should be false for production.'
+        required: false
+        type: boolean
+        default: false # Default to safer option; caller can override for non-prod
+      terraform-version:
+        description: 'Specific Terraform version to use (e.g., 1.0.0).'
+        required: false
+        type: string
+        default: 'latest' # Use the latest stable version by default
+
+    outputs:
+      status:
+        description: "Status of the Terraform command execution ('success' or 'failure')."
+        value: ${{ jobs.terraform_command_job.outputs.job_status }}
+      plan_exit_code: # Specific to 'plan' command
+        description: "Exit code of terraform plan. 0 = no changes, 1 = error, 2 = changes detected."
+        value: ${{ jobs.terraform_command_job.outputs.plan_exit_code_output }}
+      # Add other outputs as needed, e.g., plan content if captured
+
+    secrets:
+      # Cloud provider credentials - these are examples for Azure. Adapt for AWS, GCP, etc.
+      AZURE_CLIENT_ID:
+        description: 'Azure Client ID for Terraform authentication.'
+        required: false # Required if using AzureRM provider with service principal
+      AZURE_CLIENT_SECRET:
+        description: 'Azure Client Secret for Terraform authentication.'
+        required: false
+      AZURE_SUBSCRIPTION_ID:
+        description: 'Azure Subscription ID.'
+        required: false
+      AZURE_TENANT_ID:
+        description: 'Azure Tenant ID.'
+        required: false
+      # AWS_ACCESS_KEY_ID:
+      #   required: false
+      # AWS_SECRET_ACCESS_KEY:
+      #   required: false
+      # GOOGLE_CREDENTIALS:
+      #   required: false
+
+jobs:
+  terraform_command_job:
+    name: Terraform ${{ inputs.terraform-command }} for ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+
+    env: # Set environment variables for Terraform AzureRM provider (example)
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      # TF_LOG: "DEBUG" # Uncomment for verbose Terraform logging
+
+    outputs:
+      job_status: ${{ steps.set_final_status.outputs.status }}
+      plan_exit_code_output: ${{ steps.run_terraform_plan.outputs.exitcode }} # From hashicorp/terraform-github-actions
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        # No fetch-depth needed unless Terraform modules are in the same repo and rely on git history
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3 # Or a more specific version
+        with:
+          terraform_version: ${{ inputs.terraform-version }}
+          # terraform_wrapper: true # Or false, depending on preference
+
+      - name: Terraform Init
+        id: init
+        run: |
+          INIT_ARGS=""
+          if [[ -n "${{ inputs.backend-config-file }}" ]]; then
+            INIT_ARGS="-backend-config=${{ inputs.backend-config-file }}"
+          fi
+          terraform init -input=false $INIT_ARGS
+        continue-on-error: false
+
+      - name: Terraform Workspace (Select or New)
+        id: workspace
+        if: steps.init.outcome == 'success'
+        run: |
+          terraform workspace select ${{ inputs.environment }} || terraform workspace new ${{ inputs.environment }}
+        continue-on-error: false
+
+      - name: Terraform Validate
+        id: validate
+        if: steps.workspace.outcome == 'success' && inputs.terraform-command == 'validate'
+        run: terraform validate -json # -json for machine-readable output if needed later
+        continue-on-error: true # Allow validation to fail and report status
+
+      - name: Terraform Plan
+        id: run_terraform_plan # Changed id to avoid conflict with input name
+        if: steps.workspace.outcome == 'success' && inputs.terraform-command == 'plan'
+        run: |
+          PLAN_ARGS="-input=false -out=${{ inputs.plan-output-file }} -detailed-exitcode"
+          if [[ -n "${{ inputs.var-file }}" ]]; then
+            PLAN_ARGS="$PLAN_ARGS -var-file=${{ inputs.var-file }}"
+          fi
+          terraform plan $PLAN_ARGS
+        continue-on-error: true # Plan can have exit code 2 for changes, which is not an error
+
+      - name: Terraform Apply
+        id: apply
+        if: steps.workspace.outcome == 'success' && inputs.terraform-command == 'apply'
+        run: |
+          APPLY_ARGS="-input=false"
+          if [[ "${{ inputs.apply-auto-approve }}" == "true" ]]; then
+            APPLY_ARGS="$APPLY_ARGS -auto-approve"
+          fi
+          
+          # Check if applying from a plan file or directly
+          if [[ -f "${{ inputs.plan-output-file }}" ]]; then
+            echo "Applying from plan file: ${{ inputs.plan-output-file }}"
+            APPLY_ARGS="$APPLY_ARGS ${{ inputs.plan-output-file }}"
+          else
+            echo "Applying directly (no plan file specified or found)."
+            if [[ -n "${{ inputs.var-file }}" ]]; then
+              APPLY_ARGS="$APPLY_ARGS -var-file=${{ inputs.var-file }}"
+            fi
+          fi
+          terraform apply $APPLY_ARGS
+        continue-on-error: true # Allow apply to fail and report status
+
+      - name: Terraform Destroy
+        id: destroy
+        if: steps.workspace.outcome == 'success' && inputs.terraform-command == 'destroy'
+        run: |
+          DESTROY_ARGS="-input=false -auto-approve" # Typically auto-approve for destroy in CI
+          if [[ -n "${{ inputs.var-file }}" ]]; then
+            DESTROY_ARGS="$DESTROY_ARGS -var-file=${{ inputs.var-file }}"
+          fi
+          terraform destroy $DESTROY_ARGS
+        continue-on-error: true # Allow destroy to fail and report status
+
+      - name: Set Final Status
+        id: set_final_status
+        shell: bash
+        run: |
+          FINAL_STATUS="success"
+          COMMAND="${{ inputs.terraform-command }}"
+          
+          if [[ "$COMMAND" == "validate" && "${{ steps.validate.outcome }}" == "failure" ]]; then
+            FINAL_STATUS="failure"
+            echo "::error::Terraform validation failed."
+          elif [[ "$COMMAND" == "plan" ]]; then
+            # Plan exit codes: 0=no changes, 1=error, 2=changes. Only 1 is a failure for the step.
+            if [[ "${{ steps.run_terraform_plan.outputs.exitcode }}" == "1" ]]; then
+              FINAL_STATUS="failure"
+              echo "::error::Terraform plan encountered an error."
+            elif [[ "${{ steps.run_terraform_plan.outcome }}" == "failure" ]]; then # Catch other plan failures
+              FINAL_STATUS="failure"
+              echo "::error::Terraform plan step failed."
+            fi
+          elif [[ "$COMMAND" == "apply" && "${{ steps.apply.outcome }}" == "failure" ]]; then
+            FINAL_STATUS="failure"
+            echo "::error::Terraform apply failed."
+          elif [[ "$COMMAND" == "destroy" && "${{ steps.destroy.outcome }}" == "failure" ]]; then
+            FINAL_STATUS="failure"
+            echo "::error::Terraform destroy failed."
+          elif [[ "${{ steps.init.outcome }}" == "failure" || "${{ steps.workspace.outcome }}" == "failure" ]]; then
+            FINAL_STATUS="failure"
+            echo "::error::Terraform init or workspace selection failed."
+          fi
+          echo "status=$FINAL_STATUS" >> $GITHUB_OUTPUT
+        if: always()

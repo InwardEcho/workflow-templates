@@ -1,0 +1,189 @@
+# Reusable NuGet Publish Workflow
+# Filename: .github/workflows/reusable-publish-nuget.yml
+# Purpose: Publishes NuGet packages to a specified feed.
+
+name: Reusable NuGet Publish
+
+on:
+  workflow_call:
+    inputs:
+      package-path:
+        description: 'Glob pattern for .nupkg files to publish (e.g., "**/*.nupkg", "src/MyProject/bin/Release/*.nupkg").'
+        required: true
+        type: string
+      version: # Though version is in the .nupkg, this can be used for logging or verification
+        description: 'The version of the package being published (for logging/verification).'
+        required: false # Often the nupkg file itself contains the definitive version
+        type: string
+        default: ''
+      nuget-feed-url:
+        description: 'URL of the NuGet feed (e.g., https://api.nuget.org/v3/index.json or GitHub Packages URL).'
+        required: true
+        type: string
+      is-prerelease: # This input is more of a hint or for conditional logic if needed
+        description: 'Hint for the feed or if specific feed behavior is tied to this. Some feeds might auto-detect from version string.'
+        required: false
+        type: boolean
+        default: false
+      dotnet-version-to-use:
+        description: 'Specific .NET SDK version for `dotnet nuget push`.'
+        required: false
+        type: string
+        default: '8.0.x' # Default to a recent version
+      skip-duplicate:
+        description: 'Whether to skip if the package version already exists on the feed (`--skip-duplicate` flag).'
+        required: false
+        type: boolean
+        default: true
+      working-directory:
+        description: 'Directory where the nuget packages are located or where the push command should be run from.'
+        required: false
+        type: string
+        default: '.' # Defaults to the root of the checkout
+
+    outputs:
+      status:
+        description: "Status of the publish operation ('success', 'failure', or 'skipped')."
+        value: ${{ jobs.publish_nuget_job.outputs.job_status }}
+      published-packages:
+        description: 'JSON array of package names/versions that were attempted to be published.'
+        value: ${{ jobs.publish_nuget_job.outputs.job_published_packages_list }}
+      published-count:
+        description: 'Number of packages successfully published in this run.'
+        value: ${{ jobs.publish_nuget_job.outputs.job_published_count }}
+
+    secrets:
+      NUGET_API_KEY:
+        description: 'API key for the NuGet feed.'
+        required: true
+
+jobs:
+  publish_nuget_job:
+    name: Publish NuGet Package(s)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    outputs:
+      job_status: ${{ steps.set_final_status.outputs.status }}
+      job_published_packages_list: ${{ steps.do_publish.outputs.published_list_json }}
+      job_published_count: ${{ steps.do_publish.outputs.successfully_published_count }}
+
+    steps:
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ inputs.dotnet-version-to-use }}
+
+      # The calling workflow (ci-unified.yml) is responsible for building and packaging,
+      # and then downloading the artifact containing the .nupkg files if this publish workflow
+      # is in a separate job that doesn't have direct access to the build outputs.
+      # This reusable workflow assumes the .nupkg files are already present in the inputs.working-directory
+      # or at the path specified by inputs.package-path relative to the checkout root.
+      # If the caller downloads artifacts to a specific path, it should pass that as working-directory.
+
+      - name: Find and Publish NuGet Packages
+        id: do_publish
+        shell: bash
+        run: |
+          echo "Searching for packages in '${{ inputs.working-directory }}' matching '${{ inputs.package-path }}'..."
+          PACKAGES_FOUND=()
+          SUCCESSFULLY_PUBLISHED_COUNT=0
+          PUBLISHED_LIST_JSON="[]" # Initialize as empty JSON array
+
+          # Correctly handle paths, especially if working-directory is not '.'
+          # The find command should start from the root of the checkout if package-path is absolute-like (e.g. starts with ** or ./)
+          # If package-path is relative and working-directory is set, find should operate within working-directory.
+          # For simplicity, assuming package-path is a glob that works from the root or within working-directory.
+          
+          # Using a loop to find packages first, then attempt to publish
+          # This handles spaces in filenames better than `find ... -exec` for complex commands
+          shopt -s globstar nullglob
+          cd "${{ inputs.working-directory }}" # Change to working directory for globbing
+          
+          for pkg_file in ${{ inputs.package-path }}; do
+            if [ -f "$pkg_file" ]; then
+              echo "Found package: $pkg_file"
+              PACKAGES_FOUND+=("$pkg_file")
+            else
+              echo "Warning: Pattern '$pkg_file' (from ${{ inputs.package-path }}) did not match any files in '${{ inputs.working-directory }}'."
+            fi
+          done
+          cd "$OLDPWD" # Go back to original directory
+
+          if [ ${#PACKAGES_FOUND[@]} -eq 0 ]; then
+            echo "No NuGet packages found matching pattern '${{ inputs.package-path }}' in directory '${{ inputs.working-directory }}'."
+            echo "status=skipped" >> $GITHUB_OUTPUT
+            echo "published_list_json='[]'" >> $GITHUB_OUTPUT
+            echo "successfully_published_count=0" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "Attempting to publish the following packages: ${PACKAGES_FOUND[@]}"
+          
+          TEMP_PUBLISHED_LIST="" # Accumulate JSON objects here
+
+          for pkg in "${PACKAGES_FOUND[@]}"; do
+            echo "Publishing $pkg to ${{ inputs.nuget-feed-url }}..."
+            COMMAND_OUTPUT=""
+            ERROR_OCCURRED=false
+            
+            # Construct the command
+            PUSH_COMMAND="dotnet nuget push \"${{ inputs.working-directory }}/$pkg\" --api-key \"${{ secrets.NUGET_API_KEY }}\" --source \"${{ inputs.nuget-feed-url }}\" --force-english-output"
+            if [[ "${{ inputs.skip-duplicate }}" == "true" ]]; then
+              PUSH_COMMAND="$PUSH_COMMAND --skip-duplicate"
+            fi
+            
+            # Execute and capture output
+            if COMMAND_OUTPUT=$(eval $PUSH_COMMAND 2>&1); then
+              echo "Successfully published $pkg."
+              echo "$COMMAND_OUTPUT"
+              SUCCESSFULLY_PUBLISHED_COUNT=$((SUCCESSFULLY_PUBLISHED_COUNT + 1))
+              # Add to JSON list
+              PKG_JSON_ENTRY=$(jq -n --arg p "$pkg" --arg v "${{ inputs.version }}" --arg s "success" '{package: $p, version: $v, status: $s}')
+            else
+              echo "::error::Failed to publish $pkg."
+              echo "$COMMAND_OUTPUT"
+              ERROR_OCCURRED=true
+              PKG_JSON_ENTRY=$(jq -n --arg p "$pkg" --arg v "${{ inputs.version }}" --arg s "failure" --arg e "$COMMAND_OUTPUT" '{package: $p, version: $v, status: $s, error: $e}')
+            fi
+            
+            if [[ -z "$TEMP_PUBLISHED_LIST" ]]; then
+              TEMP_PUBLISHED_LIST="$PKG_JSON_ENTRY"
+            else
+              TEMP_PUBLISHED_LIST="$TEMP_PUBLISHED_LIST,$PKG_JSON_ENTRY"
+            fi
+
+            # If any individual push fails, we might want to mark the whole step as failed later
+            # For now, we continue trying to publish other packages.
+          done
+          
+          PUBLISHED_LIST_JSON="[$TEMP_PUBLISHED_LIST]"
+          echo "published_list_json=$PUBLISHED_LIST_JSON" >> $GITHUB_OUTPUT
+          echo "successfully_published_count=$SUCCESSFULLY_PUBLISHED_COUNT" >> $GITHUB_OUTPUT
+
+          if [[ $SUCCESSFULLY_PUBLISHED_COUNT -lt ${#PACKAGES_FOUND[@]} ]]; then
+             if [[ $SUCCESSFULLY_PUBLISHED_COUNT -eq 0 ]]; then
+                echo "status=failure" >> $GITHUB_OUTPUT # All failed
+             else
+                echo "status=partial_success" >> $GITHUB_OUTPUT # Some failed
+             fi
+          else
+             echo "status=success" >> $GITHUB_OUTPUT # All succeeded
+          fi
+
+      - name: Set Final Job Status
+        id: set_final_status
+        shell: bash
+        run: |
+          # This step ensures the job output 'status' reflects the outcome of the publish attempts.
+          STEP_STATUS="${{ steps.do_publish.outputs.status }}"
+          if [[ "$STEP_STATUS" == "failure" || "$STEP_STATUS" == "partial_success" ]]; then
+            echo "::error::One or more packages failed to publish. Check logs above."
+            echo "status=failure" >> $GITHUB_OUTPUT
+          elif [[ "$STEP_STATUS" == "skipped" ]]; then
+            echo "status=skipped" >> $GITHUB_OUTPUT
+          else
+            echo "status=success" >> $GITHUB_OUTPUT
+          fi
+        if: always()

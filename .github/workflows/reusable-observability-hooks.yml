@@ -1,0 +1,267 @@
+# Reusable Observability Hooks Workflow
+# Filename: .github/workflows/reusable-observability-hooks.yml
+# Purpose: Sends notifications about workflow status to various channels.
+
+name: Reusable Observability Hooks
+
+on:
+  workflow_call:
+    inputs:
+      status:
+        description: "The status of the calling workflow/job (e.g., 'success', 'failure', 'cancelled')."
+        required: true
+        type: string
+      workflow-name:
+        description: 'Name of the calling workflow.'
+        required: true
+        type: string
+      run-url:
+        description: 'URL to the GitHub Actions run.'
+        required: true
+        type: string
+      pr-number:
+        description: 'Pull request number (if applicable).'
+        required: false
+        type: string
+        default: ''
+      commit-sha:
+        description: 'Commit SHA.'
+        required: false
+        type: string
+        default: ''
+      branch-name:
+        description: 'Branch name.'
+        required: false
+        type: string
+        default: ''
+      environment-name:
+        description: 'Environment name (for CD notifications).'
+        required: false
+        type: string
+        default: ''
+      version-deployed:
+        description: 'Version deployed (for CD notifications).'
+        required: false
+        type: string
+        default: ''
+      message-details:
+        description: 'Additional custom message details (can be multi-line).'
+        required: false
+        type: string
+        default: ''
+      notification-channel:
+        description: "Target channel(s), comma-separated (e.g., 'slack', 'teams', 'github-pr-comment', 'email')."
+        required: true
+        type: string
+      slack-mention-users-on-failure:
+        description: 'Comma-separated Slack user IDs to mention on failure (e.g., U123,U456). Only used if channel includes slack.'
+        required: false
+        type: string
+        default: ''
+      github-pr-comment-header:
+        description: 'Header for the GitHub PR comment. Only used if channel includes github-pr-comment.'
+        required: false
+        type: string
+        default: 'Workflow Status Update'
+
+    outputs:
+      notification_sent_status:
+        description: "Overall status of sending notifications ('success', 'partial_success', or 'failure')."
+        value: ${{ jobs.send_notification_job.outputs.job_status }}
+      notifications_sent_to:
+        description: "Comma-separated list of channels to which notifications were attempted."
+        value: ${{ jobs.send_notification_job.outputs.channels_attempted }}
+
+
+    secrets:
+      SLACK_WEBHOOK_URL:
+        description: 'Slack incoming webhook URL.'
+        required: false
+      TEAMS_WEBHOOK_URL:
+        description: 'Microsoft Teams incoming webhook URL.'
+        required: false
+      GITHUB_TOKEN: # Specifically for PR comments or other GitHub API interactions
+        description: 'GitHub Token for API interactions like PR comments.'
+        required: false
+
+
+jobs:
+  send_notification_job:
+    name: Send Notification
+    runs-on: ubuntu-latest
+    outputs:
+      job_status: ${{ steps.final_status_check.outputs.status }}
+      channels_attempted: ${{ steps.prepare_message.outputs.channels }}
+
+    steps:
+      - name: Prepare Message and Context
+        id: prepare_message
+        shell: bash
+        run: |
+          STATUS_ICON="✅"
+          MESSAGE_COLOR="good" # Slack color
+          ACTUAL_STATUS="${{ inputs.status }}"
+          MENTIONS=""
+
+          if [[ "$ACTUAL_STATUS" == "failure" ]]; then
+            STATUS_ICON="❌"
+            MESSAGE_COLOR="danger"
+            if [[ "${{ inputs.slack-mention-users-on-failure }}" != "" && "${{ inputs.notification-channel }}" == *slack* ]]; then
+              IFS=',' read -ra USERS <<< "${{ inputs.slack-mention-users-on-failure }}"
+              for user in "${USERS[@]}"; do
+                MENTIONS="$MENTIONS <@$user>"
+              done
+              MENTIONS=$(echo "$MENTIONS" | sed 's/^ *//g') # Trim leading space
+            fi
+          elif [[ "$ACTUAL_STATUS" == "cancelled" ]]; then
+            STATUS_ICON="⏹️"
+            MESSAGE_COLOR="warning"
+          fi
+
+          TITLE="$STATUS_ICON Workflow *${{ inputs.workflow-name }}* on *${{ inputs.branch-name || github.repository }}* finished with status: *${{ inputs.status }}*"
+          
+          DETAILS="*Run URL:* <${{ inputs.run-url }}|View Run>"
+          if [[ "${{ inputs.pr-number }}" != "" ]]; then
+            DETAILS="$DETAILS\n*Pull Request:* <${{ github.server_url }}/${{ github.repository }}/pull/${{ inputs.pr-number }}|#${{ inputs.pr-number }}>"
+          fi
+          if [[ "${{ inputs.commit-sha }}" != "" ]]; then
+            DETAILS="$DETAILS\n*Commit:* <${{ github.server_url }}/${{ github.repository }}/commit/${{ inputs.commit-sha }}|${{ inputs.commit-sha }}"
+          fi
+          if [[ "${{ inputs.environment-name }}" != "" ]]; then
+            DETAILS="$DETAILS\n*Environment:* ${{ inputs.environment-name }}"
+          fi
+          if [[ "${{ inputs.version-deployed }}" != "" ]]; then
+            DETAILS="$DETAILS\n*Version Deployed:* ${{ inputs.version-deployed }}"
+          fi
+          if [[ "${{ inputs.message-details }}" != "" ]]; then
+            # Escape newlines in message-details for JSON compatibility
+            ESCAPED_DETAILS=$(echo "${{ inputs.message-details }}" | awk '{printf "%s\\n", $0}' | sed '$ s/\\n$//')
+            DETAILS="$DETAILS\n*Details:*\n${ESCAPED_DETAILS}"
+          fi
+
+          # Output for other steps
+          echo "title<<EOF" >> $GITHUB_OUTPUT
+          echo "$TITLE" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+          echo "details<<EOF" >> $GITHUB_OUTPUT
+          echo -e "$DETAILS" >> $GITHUB_OUTPUT # Use -e to interpret escapes like \n
+          echo "EOF" >> $GITHUB_OUTPUT
+          
+          echo "color=$MESSAGE_COLOR" >> $GITHUB_OUTPUT
+          echo "mentions=$MENTIONS" >> $GITHUB_OUTPUT
+          echo "channels=${{ inputs.notification-channel }}" >> $GITHUB_OUTPUT
+          echo "status_icon=$STATUS_ICON" >> $GITHUB_OUTPUT
+
+
+      - name: Send Slack Notification
+        if: contains(steps.prepare_message.outputs.channels, 'slack') && env.SLACK_WEBHOOK_URL_IS_SET == 'true'
+        id: slack_notify
+        uses: slackapi/slack-github-action@v1.26.0
+        env:
+          SLACK_WEBHOOK_URL_IS_SET: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        with:
+          payload: |
+            {
+              "attachments": [
+                {
+                  "color": "${{ steps.prepare_message.outputs.color }}",
+                  "blocks": [
+                    {
+                      "type": "section",
+                      "text": {
+                        "type": "mrkdwn",
+                        "text": "${{ steps.prepare_message.outputs.title }}\n${{ steps.prepare_message.outputs.details }}\n${{ steps.prepare_message.outputs.mentions }}"
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+        continue-on-error: true
+
+      - name: Send Teams Notification
+        if: contains(steps.prepare_message.outputs.channels, 'teams') && env.TEAMS_WEBHOOK_URL_IS_SET == 'true'
+        id: teams_notify
+        uses: jdcargile/ms-teams-notification@v1.3
+        env:
+          TEAMS_WEBHOOK_URL_IS_SET: ${{ secrets.TEAMS_WEBHOOK_URL != '' }}
+        with:
+          github-token: ${{ github.token }} # Optional, for richer context
+          ms-teams-webhook-uri: ${{ secrets.TEAMS_WEBHOOK_URL }}
+          notification-summary: "${{ steps.prepare_message.outputs.title }}"
+          notification-color: "${{ steps.prepare_message.outputs.color == 'danger' && 'FF0000' || steps.prepare_message.outputs.color == 'warning' && 'FFA500' || '00FF00' }}" # Convert color
+          timezone: America/New_York # Optional
+          message: | # Markdown for Teams
+            ### ${{ steps.prepare_message.outputs.title }}
+            ---
+            ${{ steps.prepare_message.outputs.details }}
+        continue-on-error: true
+
+      - name: Post GitHub PR Comment
+        if: contains(steps.prepare_message.outputs.channels, 'github-pr-comment') && inputs.pr-number != '' && env.GITHUB_TOKEN_IS_SET == 'true'
+        id: pr_comment
+        uses: actions/github-script@v7
+        env:
+          GITHUB_TOKEN_IS_SET: ${{ secrets.GITHUB_TOKEN != '' }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const header = `### ${{ inputs.github-pr-comment-header }} ${{ steps.prepare_message.outputs.status_icon }}`;
+            const body = `${steps.prepare_message.outputs.title}\n${steps.prepare_message.outputs.details}`;
+            github.rest.issues.createComment({
+              issue_number: ${{ inputs.pr-number }},
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `${header}\n\n${body}`
+            });
+        continue-on-error: true
+      
+      - name: Final Status Check
+        id: final_status_check
+        shell: bash
+        run: |
+          JOB_STATUS="success"
+          CHANNELS_ATTEMPTED="${{ steps.prepare_message.outputs.channels }}"
+          
+          if [[ "$CHANNELS_ATTEMPTED" == *slack* && "${{ env.SLACK_WEBHOOK_URL_IS_SET }}" == "true" && "${{ steps.slack_notify.outcome }}" == "failure" ]]; then
+            JOB_STATUS="partial_success"
+            echo "::warning::Slack notification failed."
+          fi
+          if [[ "$CHANNELS_ATTEMPTED" == *teams* && "${{ env.TEAMS_WEBHOOK_URL_IS_SET }}" == "true" && "${{ steps.teams_notify.outcome }}" == "failure" ]]; then
+            JOB_STATUS="partial_success"
+            echo "::warning::Teams notification failed."
+          fi
+          if [[ "$CHANNELS_ATTEMPTED" == *github-pr-comment* && "${{ env.GITHUB_TOKEN_IS_SET }}" == "true" && "${{ steps.pr_comment.outcome }}" == "failure" ]]; then
+            JOB_STATUS="partial_success"
+            echo "::warning::GitHub PR comment failed."
+          fi
+
+          # If all attempted and configured notifications failed, then it's a full failure of this job
+          # This logic can be enhanced if needed.
+          if [[ "$JOB_STATUS" == "partial_success" ]]; then
+             # Example: if only one channel was configured and it failed, consider it 'failure' not 'partial_success'
+             ACTIVE_CHANNELS=0
+             [[ "$CHANNELS_ATTEMPTED" == *slack* && "${{ env.SLACK_WEBHOOK_URL_IS_SET }}" == "true" ]] && ACTIVE_CHANNELS=$((ACTIVE_CHANNELS + 1))
+             [[ "$CHANNELS_ATTEMPTED" == *teams* && "${{ env.TEAMS_WEBHOOK_URL_IS_SET }}" == "true" ]] && ACTIVE_CHANNELS=$((ACTIVE_CHANNELS + 1))
+             [[ "$CHANNELS_ATTEMPTED" == *github-pr-comment* && "${{ env.GITHUB_TOKEN_IS_SET }}" == "true" ]] && ACTIVE_CHANNELS=$((ACTIVE_CHANNELS + 1))
+             
+             FAILED_NOTIFICATIONS=0
+             [[ "$CHANNELS_ATTEMPTED" == *slack* && "${{ env.SLACK_WEBHOOK_URL_IS_SET }}" == "true" && "${{ steps.slack_notify.outcome }}" == "failure" ]] && FAILED_NOTIFICATIONS=$((FAILED_NOTIFICATIONS + 1))
+             [[ "$CHANNELS_ATTEMPTED" == *teams* && "${{ env.TEAMS_WEBHOOK_URL_IS_SET }}" == "true" && "${{ steps.teams_notify.outcome }}" == "failure" ]] && FAILED_NOTIFICATIONS=$((FAILED_NOTIFICATIONS + 1))
+             [[ "$CHANNELS_ATTEMPTED" == *github-pr-comment* && "${{ env.GITHUB_TOKEN_IS_SET }}" == "true" && "${{ steps.pr_comment.outcome }}" == "failure" ]] && FAILED_NOTIFICATIONS=$((FAILED_NOTIFICATIONS + 1))
+
+             if [[ $ACTIVE_CHANNELS -gt 0 && $FAILED_NOTIFICATIONS -eq $ACTIVE_CHANNELS ]]; then
+                JOB_STATUS="failure"
+                echo "::error::All configured notification attempts failed."
+             else
+                echo "One or more notifications failed, but some may have succeeded."
+             fi
+          fi
+          echo "status=$JOB_STATUS" >> $GITHUB_OUTPUT
+        if: always()
+        env: # Make these available to the script
+          SLACK_WEBHOOK_URL_IS_SET: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
+          TEAMS_WEBHOOK_URL_IS_SET: ${{ secrets.TEAMS_WEBHOOK_URL != '' }}
+          GITHUB_TOKEN_IS_SET: ${{ secrets.GITHUB_TOKEN != '' }}

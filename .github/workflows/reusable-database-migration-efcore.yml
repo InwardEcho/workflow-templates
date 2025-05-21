@@ -1,0 +1,143 @@
+# Reusable Entity Framework Core Database Migration Workflow
+# Filename: .github/workflows/reusable-database-migration-efcore.yml
+# Purpose: Manages Entity Framework Core database schema migrations in an automated and safe manner.
+
+name: Reusable EF Core Database Migration
+
+on:
+  workflow_call:
+    inputs:
+      efcore-project-path:
+        description: 'Path to the .csproj file containing the EF Core DbContext and migrations.'
+        required: true
+        type: string
+      environment: # For logging and context, not directly used by EF Core CLI unless for conditional logic
+        description: 'Target environment name (e.g., dev, test, prod).'
+        required: true
+        type: string
+      backup-required:
+        description: 'Whether a database backup should be attempted before migration.'
+        required: false
+        type: boolean
+        default: false # Default to false; enable for prod or sensitive environments
+      backup-script-path:
+        description: 'Path to a custom database backup script. If empty, a placeholder/example is used.'
+        required: false
+        type: string
+        default: ''
+      migration-timeout:
+        description: 'Timeout for the `dotnet ef database update` command (e.g., 5m, 10m).'
+        required: false
+        type: string
+        default: '5m'
+      dotnet-version:
+        description: '.NET SDK version to use for EF Core tools (e.g., 7.0.x, 8.0.x).'
+        required: false
+        type: string
+        default: '7.0.x' # Ensure this supports your EF Core version
+
+    outputs:
+      status:
+        description: "Status of the database migration process ('success' or 'failure')."
+        value: ${{ jobs.migrate_database_job.outputs.job_status }}
+      backup_status:
+        description: "Status of the backup step ('success', 'failure', or 'skipped')."
+        value: ${{ jobs.migrate_database_job.outputs.backup_step_status }}
+      migration_apply_status:
+        description: "Status of applying migrations ('success', 'failure')."
+        value: ${{ jobs.migrate_database_job.outputs.migration_apply_step_status }}
+
+    secrets:
+      DB_CONNECTION_STRING: # Caller maps its environment-specific secret to this
+        description: 'The database connection string for the target environment.'
+        required: true
+      # Secrets for backup storage if a generic script needs them
+      # BACKUP_STORAGE_ACCOUNT_NAME:
+      #   required: false
+      # BACKUP_STORAGE_CONTAINER_NAME:
+      #   required: false
+      # BACKUP_STORAGE_ACCESS_KEY: # Or use OIDC/Managed Identity
+      #   required: false
+
+jobs:
+  migrate_database_job:
+    name: Apply EF Core Migrations for ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    outputs:
+      job_status: ${{ steps.set_final_status.outputs.status }}
+      backup_step_status: ${{ steps.backup_database.outcome || 'skipped' }}
+      migration_apply_step_status: ${{ steps.apply_migrations.outcome || 'skipped' }}
+
+    steps:
+      - name: Checkout repository (to access EF Core project and custom backup scripts)
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ inputs.dotnet-version }}
+
+      - name: Install EF Core Tools
+        shell: bash
+        run: |
+          # Extract major.minor from dotnet-version (e.g., 7.0.x -> 7.0)
+          DOTNET_MAJOR_MINOR=$(echo "${{ inputs.dotnet-version }}" | cut -d'.' -f1,2)
+          echo "Installing EF Core tools for .NET $DOTNET_MAJOR_MINOR"
+          # EF Core tools are often versioned with Major.Minor.Patch, but global tool usually aligns with SDK Major.Minor
+          # For .NET 7 SDK (7.0.x), you'd typically install EF tools version 7.0.y
+          # For .NET 8 SDK (8.0.x), you'd typically install EF tools version 8.0.y
+          # We'll install the latest patch for the given major.minor.
+          dotnet tool install --global dotnet-ef --version $DOTNET_MAJOR_MINOR.*
+          # Or, if you want to be more specific and ensure it matches the SDK's feature band:
+          # dotnet tool install --global dotnet-ef --version $(echo "${{ inputs.dotnet-version }}" | sed 's/\.x$//').*
+          # If using local tools manifest:
+          # dotnet tool restore --tool-manifest .config/dotnet-tools.json
+
+      - name: Backup Database (Optional)
+        id: backup_database
+        if: inputs.backup-required == true
+        run: |
+          echo "Attempting database backup for environment: ${{ inputs.environment }}"
+          if [[ -n "${{ inputs.backup-script-path }}" && -f "${{ inputs.backup-script-path }}" ]]; then
+            echo "Running custom backup script: ${{ inputs.backup-script-path }}"
+            # Ensure the script is executable: chmod +x ${{ inputs.backup-script-path }}
+            # Execute the script, passing necessary env vars or secrets if it expects them
+            echo "::warning::Custom backup script execution logic needs to be implemented here."
+            exit 0 
+          else
+            echo "::warning::No custom backup script provided or found at '${{ inputs.backup-script-path }}'. Placeholder for generic backup."
+            echo "Generic backup logic would go here."
+            echo "Simulating successful backup for now."
+          fi
+        env:
+          DB_CONNECTION_STRING_FOR_BACKUP: ${{ secrets.DB_CONNECTION_STRING }}
+        continue-on-error: false
+
+      - name: Apply EF Core Migrations
+        id: apply_migrations
+        if: (inputs.backup-required == false) || (inputs.backup-required == true && steps.backup_database.outcome == 'success')
+        run: |
+          echo "Applying EF Core migrations to ${{ inputs.environment }} database..."
+          echo "Project path: ${{ inputs.efcore-project-path }}"
+          timeout ${{ inputs.migration-timeout }} dotnet ef database update --project "${{ inputs.efcore-project-path }}" --verbose
+        env:
+          ConnectionStrings__DefaultConnection: ${{ secrets.DB_CONNECTION_STRING }} # Example for ASP.NET Core config
+        continue-on-error: false
+
+      - name: Set Final Status
+        id: set_final_status
+        shell: bash
+        run: |
+          FINAL_STATUS="success"
+          if [[ "${{ inputs.backup-required }}" == "true" && "${{ steps.backup_database.outcome }}" == "failure" ]]; then
+            FINAL_STATUS="failure"
+            echo "::error::Database backup step failed."
+          elif [[ "${{ steps.apply_migrations.outcome }}" == "failure" ]]; then
+            FINAL_STATUS="failure"
+            echo "::error::Applying EF Core migrations failed."
+          elif [[ "${{ steps.apply_migrations.outcome }}" == "skipped" && "${{ inputs.backup-required }}" == "true" && "${{ steps.backup_database.outcome }}" != "success" ]]; then
+            FINAL_STATUS="failure"
+            echo "::error::Migrations skipped due to backup step not succeeding."
+          fi
+          echo "status=$FINAL_STATUS" >> $GITHUB_OUTPUT
+        if: always()

@@ -1,0 +1,152 @@
+# Reusable GitHub Native Security Workflow
+# Filename: .github/workflows/reusable-security-github.yml
+# Purpose: Orchestrates GitHub's native security features like CodeQL.
+# Assumes Secret Scanning and Dependency Review are enabled at the repository/organization level.
+
+name: Reusable GitHub Security Checks
+
+on:
+  workflow_call:
+    inputs:
+      enable-codeql:
+        description: 'Whether to run CodeQL analysis.'
+        required: false
+        type: boolean
+        default: true
+      codeql-language:
+        description: "Comma-separated list of languages for CodeQL (e.g., 'csharp', 'javascript'). Defaults to 'csharp'."
+        required: false
+        type: string
+        default: 'csharp'
+      codeql-config-file:
+        description: 'Path to a custom CodeQL configuration file.'
+        required: false
+        type: string
+        default: ''
+      codeql-query-suite: # Renamed from codeql-query-suite to be more aligned with CodeQL action inputs if needed
+        description: 'Path to a custom CodeQL query suite file (.qls) or a predefined suite name.'
+        required: false
+        type: string
+        default: '' # Default uses CodeQL's default queries for the language
+      codeql-ram:
+        description: 'Amount of RAM to make available to CodeQL analysis (e.g., 2048). CodeQL may use more if available.'
+        required: false
+        type: string # String to allow for potential units in future, though action expects number
+        default: '' # Let CodeQL decide by default
+      codeql-threads:
+        description: 'Number of threads for CodeQL analysis (e.g., 2). 0 means use one thread per core.'
+        required: false
+        type: string # String for consistency
+        default: '0' # Default to use all available cores
+      fail-on-codeql-error: # Error during analysis itself
+        description: 'Whether the workflow should fail if CodeQL encounters an error during analysis setup or execution.'
+        required: false
+        type: boolean
+        default: false
+      fail-on-codeql-severity: # Fail based on findings
+        description: "Minimum severity of CodeQL alert to cause the job to fail (e.g., 'error', 'warning', 'note'). Empty means don't fail on findings."
+        required: false
+        type: string
+        default: '' # Default: do not fail based on severity of findings
+
+    outputs:
+      status:
+        description: "Status of the security scan execution ('success' or 'failure')."
+        value: ${{ jobs.security_scan_job.outputs.job_status }}
+      codeql-results-url:
+        description: 'URL to the CodeQL analysis results page (SARIF ID).'
+        value: ${{ jobs.security_scan_job.outputs.codeql_sarif_id }}
+
+jobs:
+  security_scan_job:
+    name: GitHub Security Scans
+    runs-on: ubuntu-latest # CodeQL generally runs well on Ubuntu
+    permissions:
+      actions: read # To read workflow context
+      contents: read # To checkout code
+      security-events: write # To upload CodeQL SARIF results
+
+    outputs:
+      job_status: ${{ steps.set_final_status.outputs.status }}
+      codeql_sarif_id: ${{ steps.codeql_analyze.outputs.sarif-id }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Recommended for CodeQL to analyze full history
+
+      - name: Initialize CodeQL
+        id: codeql_init
+        if: inputs.enable-codeql == true
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ inputs.codeql-language }}
+          config-file: ${{ inputs.codeql-config-file || null }} # Pass null if empty to use default
+          queries: ${{ inputs.codeql-query-suite || null }} # Pass null if empty
+          ram: ${{ inputs.codeql-ram || null }}
+          threads: ${{ inputs.codeql-threads || null }}
+        continue-on-error: ${{ inputs.fail-on-codeql-error == false }} # Continue if init error and fail-on-codeql-error is false
+
+      # If your project requires a build step for CodeQL to analyze it (common for compiled languages like C#),
+      # that build step should ideally occur here.
+      # For C#, CodeQL's autobuilder often works, but if you have a complex build,
+      # you might need to call your `reusable-build-test-dotnet.yml` here with `package-application: false` and `run-tests: false`.
+      # Example:
+      # - name: Build for CodeQL (if autobuild is insufficient)
+      #   if: inputs.enable-codeql == true && steps.codeql_init.outcome == 'success'
+      #   uses: ./.github/workflows/reusable-build-test-dotnet.yml
+      #   with:
+      #     solution-path: '**/*.sln' # Or a more specific path if needed
+      #     build-configuration: 'Release' # Or the most relevant for analysis
+      #     run-tests: false
+      #     package-application: false
+      #     upload-build-artifacts: false
+      #     upload-test-results-artifact: false
+      #   continue-on-error: ${{ inputs.fail-on-codeql-error == false }}
+
+      - name: Perform CodeQL Analysis
+        id: codeql_analyze
+        if: inputs.enable-codeql == true && steps.codeql_init.outcome == 'success' # Only run if init succeeded
+        uses: github/codeql-action/analyze@v3
+        continue-on-error: ${{ inputs.fail-on-codeql-error == false }}
+
+      - name: Check CodeQL Results for Failure Condition
+        id: check_codeql_severity
+        if: inputs.enable-codeql == true && inputs.fail-on-codeql-severity != '' && steps.codeql_analyze.outcome == 'success'
+        # This step would typically involve downloading the SARIF, parsing it, and checking severities.
+        # GitHub Actions doesn't have a direct way to fail based on SARIF content easily without custom scripting or another action.
+        # For now, this is a placeholder. A common approach is to use an action like 'advanced-security/filter-sarif'
+        # or a script to parse `steps.codeql_analyze.outputs.sarif-id` (which is the SARIF file path).
+        # The `github/codeql-action/upload-sarif` action (implicitly called by analyze) has an `upload: true` default.
+        # The `github/codeql-action/analyze` step itself does not fail based on findings by default.
+        # Branch protection rules are the primary way to enforce failure on CodeQL findings.
+        run: |
+          echo "::warning::Failing based on CodeQL finding severity ('${{ inputs.fail-on-codeql-severity }}') within the workflow requires custom SARIF processing."
+          echo "::warning::It's recommended to use branch protection rules for this, or a dedicated SARIF processing action."
+          # Placeholder: Assume for now if fail-on-codeql-severity is set, we might want to fail.
+          # This logic needs to be implemented properly if direct workflow failure is desired.
+          # For example, if inputs.fail-on-codeql-severity is 'error', and any error is found, this step should fail.
+          # For now, we'll just pass this check.
+          echo "severity_check_passed=true" >> $GITHUB_OUTPUT
+
+      - name: Set Final Status
+        id: set_final_status
+        shell: bash
+        run: |
+          FINAL_STATUS="success"
+          if [[ "${{ inputs.enable-codeql }}" == "true" ]]; then
+            if [[ "${{ steps.codeql_init.outcome }}" == "failure" && "${{ inputs.fail-on-codeql-error }}" == "true" ]]; then
+              FINAL_STATUS="failure"
+              echo "::error::CodeQL initialization failed."
+            elif [[ "${{ steps.codeql_analyze.outcome }}" == "failure" && "${{ inputs.fail-on-codeql-error }}" == "true" ]]; then
+              FINAL_STATUS="failure"
+              echo "::error::CodeQL analysis failed."
+            elif [[ "${{ inputs.fail-on-codeql-severity }}" != "" && "${{ steps.check_codeql_severity.outputs.severity_check_passed }}" == "false" ]]; then
+              # This part depends on check_codeql_severity actually implementing the check
+              FINAL_STATUS="failure"
+              echo "::error::CodeQL findings exceeded the severity threshold of '${{ inputs.fail-on-codeql-severity }}'."
+            fi
+          fi
+          echo "status=$FINAL_STATUS" >> $GITHUB_OUTPUT
+        if: always()

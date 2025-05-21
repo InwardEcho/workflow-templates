@@ -1,0 +1,337 @@
+name: Organizational Environment Orchestrator
+on:
+  workflow_call:
+    inputs:
+      environment_name:
+        description: 'Target environment (e.g., "dev", "staging", "prod"). Passed to child workflows for their environment context.'
+        type: string
+        required: true
+      application_name:
+        description: 'Name of the application being deployed (e.g., "SampleApp").'
+        type: string
+        required: true
+      app_build_artifact_name_pattern:
+        description: 'Name or pattern of the application build artifact to deploy.'
+        type: string
+        required: false
+        default: 'application-deployment-package'
+      app_build_artifact_run_id:
+        description: 'Specific run ID of the build workflow that produced the artifact.'
+        type: string
+        required: false
+      app_build_source_branch:
+        description: 'Branch to fetch the latest artifact from if app_build_artifact_run_id is not given.'
+        type: string
+        required: false
+      version_tag:
+        description: 'Version string/tag of the application being deployed.'
+        type: string
+        required: false
+
+      iac_org_template_ref:
+        description: 'Full ref to the organizational IaC template. Default is used by this orchestrator.'
+        type: string
+        required: false # No longer strictly required by this orchestrator's `uses` but good for documentation
+        default: 'InwardEcho/.github/.github/workflows/org-iac-terraform.yml@main'
+      iac_working_directory:
+        description: 'Path to the Terraform configuration files.'
+        type: string
+        required: false
+        default: './infra'
+      iac_variables_file_path_pattern:
+        description: 'Pattern for environment-specific Terraform variable files. {working_directory} and {env} are placeholders.'
+        type: string
+        required: false
+        default: '{working_directory}/{env}.tfvars'
+      iac_backend_config_file_path_pattern:
+        description: 'Pattern for environment-specific Terraform backend configuration files.'
+        type: string
+        required: false
+      iac_cloud_provider:
+        description: 'Cloud provider (e.g., azure, aws).'
+        type: string
+        required: false
+        default: 'azure'
+      iac_terraform_command:
+        description: 'Terraform command to execute.'
+        type: string
+        required: false
+        default: 'apply'
+      iac_azure_credentials_secret_name:
+        description: 'Name of the GitHub secret for Azure credentials for Terraform.'
+        type: string
+        required: false
+        default: 'AZURE_CREDENTIALS'
+
+      db_migration_org_template_ref:
+        description: 'Full ref to the organizational DB migration template. Default is used by this orchestrator.'
+        type: string
+        required: false # No longer strictly required
+        default: 'InwardEcho/.github/.github/workflows/org-database-migration-efcore.yml@main'
+      db_migration_efcore_project_path:
+        description: 'Path to the .NET project containing EF Core migrations.'
+        type: string
+        required: true
+      db_migration_startup_project_path:
+        description: 'Path to the startup project for EF Core tools.'
+        type: string
+        required: false
+      db_connection_string_source:
+        description: 'Method to obtain DB connection string (keyVault, iacOutput, secret).'
+        type: string
+        required: true
+      db_key_vault_name_iac_output_name:
+        description: 'IaC output name for Key Vault name.'
+        type: string
+        required: false
+        default: 'key_vault_name'
+      db_connection_secret_name_in_kv_iac_output_name:
+        description: 'IaC output name for secret name in Key Vault.'
+        type: string
+        required: false
+        default: 'db_connection_string_secret_name'
+      db_connection_string_iac_output_name:
+        description: 'IaC output name for raw connection string.'
+        type: string
+        required: false
+        default: 'database_connection_string'
+      db_connection_string_github_secret_name:
+        description: 'Name of the GitHub secret key for DB connection string (if source: secret).'
+        type: string
+        required: false
+      db_azure_credentials_secret_name_for_kv:
+        description: 'Name of the GitHub secret for Azure credentials for Key Vault access.'
+        type: string
+        required: false
+        default: 'AZURE_CREDENTIALS'
+
+      app_deploy_org_template_ref:
+        description: 'Full ref to the organizational App deployment template. Default is used by this orchestrator.'
+        type: string
+        required: false # No longer strictly required
+        default: 'InwardEcho/.github/.github/workflows/org-deploy-azure-app-service.yml@main'
+      app_deploy_target_name_iac_output_name:
+        description: 'IaC output name for deployment target name.'
+        type: string
+        required: false
+        default: 'app_service_name'
+      app_deploy_azure_credentials_secret_name:
+        description: 'Name of the GitHub secret for Azure credentials for app deployment.'
+        type: string
+        required: false
+        default: 'AZURE_CREDENTIALS'
+
+    secrets:
+      AZURE_CREDENTIALS:
+        description: 'Azure credentials, if default names are used by inputs.*_azure_credentials_secret_name.'
+        required: false
+      DB_CONNECTION_STRING_INPUT_SECRET:
+        description: 'Actual database connection string. Required if inputs.db_connection_string_source is "secret".'
+        required: false
+
+    outputs:
+      iac_outcome:
+        description: 'Success/failure of the IaC stage.'
+        value: ${{ jobs.set_orchestration_outputs.outputs.iac_outcome }}
+      iac_outputs_json:
+        description: 'JSON string of all outputs from the IaC org template.'
+        value: ${{ jobs.set_orchestration_outputs.outputs.iac_outputs_json }}
+      db_migration_outcome:
+        description: 'Success/failure of the DB migration stage.'
+        value: ${{ jobs.set_orchestration_outputs.outputs.db_migration_outcome }}
+      app_deployment_outcome:
+        description: 'Success/failure of the App deployment stage.'
+        value: ${{ jobs.set_orchestration_outputs.outputs.app_deployment_outcome }}
+      app_url:
+        description: 'The final URL of the deployed application.'
+        value: ${{ jobs.set_orchestration_outputs.outputs.app_url }}
+      overall_status:
+        description: 'Overall success/failure of the orchestration.'
+        value: ${{ jobs.set_orchestration_outputs.outputs.overall_status }}
+
+jobs:
+  resolve_artifact:
+    name: Resolve Application Artifact Run ID
+    if: inputs.app_build_artifact_run_id == '' && inputs.app_build_source_branch != ''
+    runs-on: ubuntu-latest
+    outputs:
+      resolved_artifact_run_id: ${{ steps.get_run_id.outputs.run_id }}
+    steps:
+      - name: Get latest successful build run ID
+        id: get_run_id
+        uses: actions/github-script@v7
+        with:
+          script: |
+            console.log(`Attempting to resolve artifact run ID for branch: ${{ inputs.app_build_source_branch }} and pattern: ${{ inputs.app_build_artifact_name_pattern }}`);
+            // TODO: Implement actual GitHub API query logic here.
+            core.setOutput('run_id', 'mock-resolved-run-id'); // Placeholder
+
+  prepare_iac_inputs:
+    name: Prepare IaC Inputs
+    runs-on: ubuntu-latest
+    outputs:
+      vars_file_path: ${{ steps.prepare_paths.outputs.vars_file_path }}
+      backend_config_file_path: ${{ steps.prepare_paths.outputs.backend_config_file_path }}
+    steps:
+      - name: Prepare IaC paths
+        id: prepare_paths
+        shell: bash
+        run: |
+          vars_pattern="${{ inputs.iac_variables_file_path_pattern }}"
+          working_dir="${{ inputs.iac_working_directory }}"
+          env_name="${{ inputs.environment_name }}"
+          
+          vars_file_path="${vars_pattern//'{working_directory}'/$working_dir}"
+          vars_file_path="${vars_file_path//'{env}'/$env_name}"
+          echo "vars_file_path=$vars_file_path" >> $GITHUB_OUTPUT
+
+          backend_file_path_out=""
+          if [[ -n "${{ inputs.iac_backend_config_file_path_pattern }}" ]]; then
+            backend_pattern="${{ inputs.iac_backend_config_file_path_pattern }}"
+            backend_file_path="${backend_pattern//'{working_directory}'/$working_dir}"
+            backend_file_path_out="${backend_file_path//'{env}'/$env_name}"
+          fi
+          echo "backend_config_file_path=$backend_file_path_out" >> $GITHUB_OUTPUT
+
+  execute_iac:
+    uses: InwardEcho/.github/.github/workflows/org-iac-terraform.yml@main # Static path
+    name: Execute Infrastructure as Code
+    needs: [prepare_iac_inputs]
+    with:
+      target_environment_name: ${{ inputs.environment_name }}
+      command: ${{ inputs.iac_terraform_command }}
+      working-directory: ${{ inputs.iac_working_directory }}
+      var-file: ${{ needs.prepare_iac_inputs.outputs.vars_file_path }}
+      backend-config-file: ${{ needs.prepare_iac_inputs.outputs.backend_config_file_path }}
+      cloud-provider: ${{ inputs.iac_cloud_provider }}
+    secrets:
+      AZURE_CREDENTIALS: ${{ secrets[inputs.iac_azure_credentials_secret_name] }}
+
+  prepare_db_migration_inputs:
+    name: Prepare DB Migration Inputs
+    runs-on: ubuntu-latest
+    needs: [execute_iac]
+    outputs:
+      resolved_db_connection_string: ${{ steps.set_kv_conn_str_output.outputs.connection_string || steps.determine_db_conn_str.outputs.connection_string }}
+    steps:
+      - name: Determine DB Connection String
+        id: determine_db_conn_str
+        shell: bash
+        env:
+          IAC_OUTPUTS_JSON: ${{ needs.execute_iac.outputs.iac_outputs_json }} 
+          DB_CONN_STR_FROM_SECRET: ${{ secrets.DB_CONNECTION_STRING_INPUT_SECRET }}
+        run: |
+          DB_CONN_STR=""
+          SOURCE="${{ inputs.db_connection_string_source }}"
+
+          if [[ "$SOURCE" == "keyVault" ]]; then
+            echo "resolution_method=keyVault" >> $GITHUB_OUTPUT
+          elif [[ "$SOURCE" == "iacOutput" ]]; then
+            KEY_NAME="${{ inputs.db_connection_string_iac_output_name }}"
+            if [[ -z "$IAC_OUTPUTS_JSON" || "$IAC_OUTPUTS_JSON" == "null" ]]; then
+              echo "::error::IAC_OUTPUTS_JSON is empty or null. Cannot extract $KEY_NAME."
+              exit 1
+            fi
+            DB_CONN_STR=$(echo "$IAC_OUTPUTS_JSON" | jq -r --arg KEY_NAME "$KEY_NAME" '.[$KEY_NAME]')
+            if [[ "$DB_CONN_STR" == "null" || -z "$DB_CONN_STR" ]]; then
+               echo "::warning::Extracted connection string for $KEY_NAME is null or empty from IAC_OUTPUTS_JSON."
+            fi
+            echo "connection_string=$DB_CONN_STR" >> $GITHUB_OUTPUT
+            echo "resolution_method=iacOutput" >> $GITHUB_OUTPUT
+          elif [[ "$SOURCE" == "secret" ]];then
+            echo "connection_string=$DB_CONN_STR_FROM_SECRET" >> $GITHUB_OUTPUT
+            echo "resolution_method=secret" >> $GITHUB_OUTPUT
+          else
+            echo "::error::Invalid db_connection_string_source: $SOURCE"
+            exit 1
+          fi
+      - name: Login to Azure for Key Vault (if needed)
+        if: steps.determine_db_conn_str.outputs.resolution_method == 'keyVault'
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets[inputs.db_azure_credentials_secret_name_for_kv] }}
+      - name: Get DB Connection String from Key Vault (if needed)
+        if: steps.determine_db_conn_str.outputs.resolution_method == 'keyVault'
+        id: get_kv_secret
+        uses: azure/get-keyvault-secrets@v1
+        with:
+          keyvault: $(echo '${{ needs.execute_iac.outputs.iac_outputs_json }}' | jq -r '.${{ inputs.db_key_vault_name_iac_output_name }}')
+          secrets: ${{ inputs.db_connection_secret_name_in_kv_iac_output_name }}
+      - name: Set Resolved Key Vault Connection String (if needed)
+        if: steps.determine_db_conn_str.outputs.resolution_method == 'keyVault'
+        id: set_kv_conn_str_output
+        run: echo "connection_string=${{ steps.get_kv_secret.outputs[inputs.db_connection_secret_name_in_kv_iac_output_name] }}" >> $GITHUB_OUTPUT
+
+  execute_db_migration:
+    uses: InwardEcho/.github/.github/workflows/org-database-migration-efcore.yml@main # Static path
+    name: Execute Database Migration
+    needs: [execute_iac, prepare_db_migration_inputs]
+    with:
+      target_environment_name: ${{ inputs.environment_name }}
+      efcore-project-path: ${{ inputs.db_migration_efcore_project_path }}
+      startup-project-path: ${{ inputs.db_migration_startup_project_path || inputs.db_migration_efcore_project_path }}
+    secrets:
+      DB_CONNECTION_STRING: ${{ needs.prepare_db_migration_inputs.outputs.resolved_db_connection_string }}
+
+  prepare_app_deployment_inputs:
+    name: Prepare App Deployment Inputs
+    runs-on: ubuntu-latest
+    needs: [execute_iac]
+    outputs:
+      deployment_target_name_resolved: ${{ steps.resolve_target.outputs.target_name }}
+    steps:
+      - name: Resolve Deployment Target Name
+        id: resolve_target
+        shell: bash
+        env:
+          IAC_OUTPUTS_JSON: ${{ needs.execute_iac.outputs.iac_outputs_json }}
+        run: |
+          TARGET_NAME_KEY="${{ inputs.app_deploy_target_name_iac_output_name }}"
+          if [[ -z "$IAC_OUTPUTS_JSON" || "$IAC_OUTPUTS_JSON" == "null" ]]; then
+            echo "::error::IAC_OUTPUTS_JSON is empty or null. Cannot extract $TARGET_NAME_KEY."
+            echo "target_name=" >> $GITHUB_OUTPUT 
+            exit 1 
+          fi
+          TARGET_NAME_VALUE=$(echo "$IAC_OUTPUTS_JSON" | jq -r --arg KEY_NAME "$TARGET_NAME_KEY" '.[$KEY_NAME]')
+          if [[ "$TARGET_NAME_VALUE" == "null" || -z "$TARGET_NAME_VALUE" ]]; then
+            echo "::warning::Deployment target name for $TARGET_NAME_KEY is null or empty."
+          fi
+          echo "target_name=$TARGET_NAME_VALUE" >> $GITHUB_OUTPUT
+          
+  execute_app_deployment:
+    uses: InwardEcho/.github/.github/workflows/org-deploy-azure-app-service.yml@main # Static path
+    name: Execute Application Deployment
+    needs: [execute_iac, execute_db_migration, resolve_artifact, prepare_app_deployment_inputs]
+    with:
+      target_environment_name: ${{ inputs.environment_name }}
+      artifact_name_pattern: ${{ inputs.app_build_artifact_name_pattern }}
+      artifact_run_id: ${{ needs.resolve_artifact.outputs.resolved_artifact_run_id || inputs.app_build_artifact_run_id }}
+      deployment_target_name: ${{ needs.prepare_app_deployment_inputs.outputs.deployment_target_name_resolved }}
+      version: ${{ inputs.version_tag }}
+    secrets:
+      AZURE_CREDENTIALS: ${{ secrets[inputs.app_deploy_azure_credentials_secret_name] }}
+
+  set_orchestration_outputs:
+    name: Set Orchestration Outputs
+    runs-on: ubuntu-latest
+    needs: [execute_iac, execute_db_migration, execute_app_deployment]
+    if: always()
+    outputs:
+      iac_outcome: ${{ needs.execute_iac.result }}
+      iac_outputs_json: ${{ needs.execute_iac.outputs.iac_outputs_json }}
+      db_migration_outcome: ${{ needs.execute_db_migration.result }}
+      app_deployment_outcome: ${{ needs.execute_app_deployment.result }}
+      app_url: ${{ needs.execute_app_deployment.outputs.app_url }}
+      overall_status: ${{ steps.overall_status_step.outputs.status }}
+    steps:
+      - name: Determine Overall Status
+        id: overall_status_step
+        shell: bash
+        run: |
+          if [[ "${{ needs.execute_iac.result }}" == "success" && \
+                "${{ needs.execute_db_migration.result }}" == "success" && \
+                "${{ needs.execute_app_deployment.result }}" == "success" ]]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+          else
+            echo "status=failure" >> $GITHUB_OUTPUT
+          fi
