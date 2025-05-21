@@ -80,9 +80,6 @@ on:
       TEAMS_WEBHOOK_URL:
         description: 'Microsoft Teams incoming webhook URL.'
         required: false
-      GITHUB_TOKEN: # Specifically for PR comments or other GitHub API interactions
-        description: 'GitHub Token for API interactions like PR comments.'
-        required: false
 
 
 jobs:
