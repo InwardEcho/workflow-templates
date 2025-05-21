@@ -6,30 +6,41 @@
 name: Unified CI
 
 on:
-  push:
-    branches:
-      - main # Or your organization's default branch
-      - 'feature/**'
-      - 'bugfix/**'
-      - 'hotfix/**'
-    # tags-ignore: # Optional: if tags have a separate release process
-    #   - 'v*'
-  workflow_dispatch: # Allows manual triggering for testing with specific inputs if needed
+  workflow_call:
     inputs:
       logLevel:
-        description: 'Log level'
+        description: 'Log level for the CI process'
         required: false
+        type: string # Even if conceptually a choice, workflow_call inputs are string, boolean, or number
         default: 'warning'
-        type: choice
-        options:
-        - info
-        - warning
-        - debug
-      # Add other inputs if manual dispatch needs specific parameters not derivable from context
+      # Potentially add other inputs if parts of this CI pipeline should be configurable by the caller
+      # For example:
+      # solution_path:
+      #   description: 'Path to the .sln file for the build'
+      #   required: false
+      #   type: string
+      #   default: '**/*.sln' # Default to how it's used in version_and_build job
+      # dotnet_version_to_use:
+      #   description: 'Specific .NET SDK version to use for build/test'
+      #   required: false
+      #   type: string
+      #   default: '8.0.x' # Default to how it's used in version_and_build job
+
+    secrets:
+      NUGET_FEED_AUTH_TOKEN_CI:
+        description: 'Optional NuGet feed authentication token for restoring packages during CI.'
+        required: false
+      WORKFLOW_DISPATCH_PAT:
+        description: 'PAT with workflow write scope, required to trigger the DEV deployment workflow.'
+        required: true # This is used in the trigger_dev_deployment job
+      SLACK_WEBHOOK_URL_CI:
+        description: 'Slack Webhook URL for CI notifications.'
+        required: false # Set to true if notifications are mandatory
 
 permissions:
   contents: read      # To checkout code
-  actions: write       # To trigger cd-dev-environment.yml via workflow_dispatch
+  actions: write       # To trigger cd-dev-environment.yml via workflow_dispatch (if this reusable workflow still does that directly)
+                       # Or, if the calling workflow should handle triggering other workflows, this might change.
   # packages: write    # If this workflow were to directly publish packages (but it uses reusable-publish-nuget)
 
 concurrency:
@@ -183,13 +194,12 @@ jobs:
       - name: Dispatch DEV Deployment Workflow
         uses: benc-uk/workflow-dispatch@v1
         with:
-          workflow: cd-dev-environment.yml # Name of the CD workflow file
+          workflow: unified-cd-workflow.yml # Name of the CD workflow file
           token: ${{ secrets.WORKFLOW_DISPATCH_PAT }} # PAT with workflow write scope is required
           inputs: | # Use the pipe for a multi-line string, ensuring valid JSON
             {
               "version_to_deploy": "${{ needs.version_and_build.outputs.calculated_version }}",
-              "source_artifact_name": "${{ needs.version_and_build.outputs.build_artifact_name }}",
-              "source_branch_is_main": "${{ needs.initialize_ci.outputs.is_main_branch }}"
+              "source_artifact_name": "${{ needs.version_and_build.outputs.build_artifact_name }}"
             }
           ref: ${{ github.ref }} # Dispatch on the same ref/branch
 
@@ -200,10 +210,26 @@ jobs:
     if: always() # Run even if previous jobs fail to report the failure
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        
+      - name: Calculate CI Status
+        id: calculate_status
+        run: |
+          BUILD_SUCCESS=${{ needs.version_and_build.outputs.build_test_status == 'success' }}
+          PUBLISH_SUCCESS=${{ needs.publish_package.result == 'success' || needs.publish_package.result == 'skipped' || needs.publish_package.result == '' }}
+          DEPLOY_SUCCESS=${{ needs.trigger_dev_deployment.result == 'success' }}
+          
+          if [[ "$BUILD_SUCCESS" == "true" && "$PUBLISH_SUCCESS" == "true" && "$DEPLOY_SUCCESS" == "true" ]]; then
+            echo "status=success" >> $GITHUB_OUTPUT
+          else
+            echo "status=failure" >> $GITHUB_OUTPUT
+          fi
+      
       - name: Notify CI Status
         uses: ./.github/workflows/reusable-observability-hooks.yml
         with:
-          status: ${{ (needs.version_and_build.outputs.build_test_status == 'success' && (needs.publish_package.result == 'success' || needs.publish_package.result == 'skipped' || needs.publish_package.result == '') && needs.trigger_dev_deployment.result == 'success') ? 'success' : 'failure' }}
+          status: ${{ steps.calculate_status.outputs.status }}
           workflow-name: "${{ github.workflow }} on ${{ github.ref_name }}"
           branch-name: ${{ github.ref_name }}
           commit-sha: ${{ github.sha }}
