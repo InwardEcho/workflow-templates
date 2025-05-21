@@ -152,7 +152,6 @@ jobs:
           artifact-name-prefix: ${{ needs.initialize_ci.outputs.build_artifact_prefix }}-${{ steps.version.outputs.calculated-version }}
           upload-build-artifacts: true # Upload the packaged application as an artifact
           upload-test-results-artifact: true
-        secrets:
           NUGET_FEED_AUTH_TOKEN: ${{ secrets.NUGET_FEED_AUTH_TOKEN_CI }} # Optional, if restore needs private feeds
 
   publish_package:
@@ -181,7 +180,6 @@ jobs:
           nuget-feed-url: "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" # Default to GitHub Packages for the org/user
           is-prerelease: ${{ needs.initialize_ci.outputs.is_main_branch == 'false' }}
           skip-duplicate: true
-        secrets:
           NUGET_API_KEY: ${{ secrets.GITHUB_TOKEN }} # Use GITHUB_TOKEN for GitHub Packages
 
   trigger_dev_deployment:
@@ -240,5 +238,4 @@ jobs:
             NuGet Publish: `${{ needs.publish_package.outputs.nuget_publish_status || 'skipped' }}` (Published: `${{ needs.publish_package.outputs.published_nuget_packages_count || 0 }}`)
             DEV Dispatch Trigger: `${{ needs.trigger_dev_deployment.result }}`
           notification-channel: 'slack' # Or your preferred channel
-        secrets:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL_CI }}

@@ -137,7 +137,6 @@ jobs:
           var-file: 'terraform.${{ github.event.inputs.target_environment_type }}.tfvars'
           # Prod should not auto-approve. Dev/Test can.
           apply-auto-approve: ${{ github.event.inputs.target_environment_type == 'prod' && 'false' || 'true' }}
-        secrets: # Corrected indentation
           # These secrets (AZURE_CLIENT_ID etc.) are expected to be defined with these exact names
           # but with different values scoped to each GitHub Environment ("Development", "Test", "Production").
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
@@ -155,8 +154,6 @@ jobs:
           connection-string: ${{ secrets.DB_CONNECTION_STRING }} # Scoped per GitHub Environment
           # Prod requires backup. Dev/Test do not.
           backup-required: ${{ github.event.inputs.target_environment_type == 'prod' && 'true' || 'false' }}
-        secrets: # Corrected indentation
-          _placeholder_for_secret_passing_to_reusable: "Ensure reusable workflow handles this correctly if it expects secrets directly"
 
       - name: Deploy Application
         id: app_deploy # Give an id to reference outputs
@@ -184,7 +181,6 @@ jobs:
           # azure-app-name-production-slot: ${{ vars.PROD_AZURE_APP_NAME_SLOT_PROD }}
           # azure-app-name-canary-slot: ${{ vars.PROD_AZURE_APP_NAME_SLOT_CANARY }}
           rollback-on-failure: true
-        secrets: # Corrected indentation
           AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS_APP_SERVICE }} # Scoped per GitHub Environment
 
       - name: Deploy Application to DEV/TEST (Direct Strategy)
@@ -198,7 +194,6 @@ jobs:
           version-being-deployed: ${{ needs.prepare_deployment_info.outputs.version }}
           azure-app-name: ${{ vars[needs.prepare_deployment_info.outputs.azure_app_name_var_name] }} # e.g., vars.DEV_AZURE_APP_NAME or vars.TEST_AZURE_APP_NAME
           # health-check-url: ${{ vars[format('{0}_HEALTH_CHECK_URL', needs.prepare_deployment_info.outputs.github_environment_name)] }} # e.g. vars.DEV_HEALTH_CHECK_URL
-        secrets: # Corrected indentation
           AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS_APP_SERVICE }} # Scoped per GitHub Environment
 
   trigger_next_stage:
@@ -275,7 +270,6 @@ jobs:
           run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           message-details: "Deployment to ${{ github.event.inputs.target_environment_type }} status: ${{ needs.deploy_and_validate.result }}. ${{ steps.get_canary_status.outputs.canary_message }}"
           notification-channel: 'slack' # Or make this conditional/parameterized
-        secrets: # Corrected indentation
           # SLACK_WEBHOOK_URL should be defined per GitHub Environment for different channels if needed
           # e.g., a general one for dev/test, a critical one for prod.
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

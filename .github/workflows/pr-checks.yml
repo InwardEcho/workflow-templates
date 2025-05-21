@@ -79,7 +79,6 @@ jobs:
           fail-on-issues: true
           sonarqube-project-key: ${{ vars.SONAR_PROJECT_KEY_PREFIX }}${{ github.event.repository.name }}
           sonarqube-host-url: ${{ vars.SONAR_HOST_URL }}
-        secrets:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
       - name: Determine Overall PR Status
@@ -121,5 +120,4 @@ jobs:
             Static Analysis (SonarQube): `${{ needs.validate_pr.outputs.sast_status }}`
           notification-channel: 'github-pr-comment'
           github-pr-comment-header: "PR Validation Summary"
-        secrets:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

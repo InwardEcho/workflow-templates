@@ -4,6 +4,11 @@ variable "github_owner" {
   default     = "InwardEcho"
 }
 
+variable "github_token" {
+  type      = string
+  sensitive = true
+}
+
 variable "managed_repository_names" {
   description = "A list of existing repository names to apply standard configurations to."
   type        = list(string)

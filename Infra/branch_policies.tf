@@ -30,8 +30,8 @@ resource "github_branch_protection" "main_branch_protection" {
 
   # Other common and recommended protections:
   required_linear_history = true  # Prevents merge commits, forces squash or rebase.
-  allows_force_pushes    = false # Protects branch history integrity. CRITICAL: Set to false.
-  allows_deletions       = false # Protects against accidental deletion of the main branch. CRITICAL: Set to false.
+  allows_force_pushes     = false # Protects branch history integrity. CRITICAL: Set to false.
+  allows_deletions        = false # Protects against accidental deletion of the main branch. CRITICAL: Set to false.
   # require_signed_commits = true      # Enhances security by verifying commit authenticity.
   # Requires developers to set up GPG/SSH commit signing.
   # Consider enabling if your team is prepared for this.
