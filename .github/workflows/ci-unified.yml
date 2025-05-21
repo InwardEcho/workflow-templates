@@ -106,136 +106,181 @@ jobs:
           echo "nuget_feed_type=$NUGET_FEED_TYPE" >> $GITHUB_OUTPUT
           echo "artifact_prefix=$ARTIFACT_PREFIX" >> $GITHUB_OUTPUT
 
-  version_and_build:
-    name: Version, Build & Test
-    runs-on: ubuntu-latest
+  calculate_version:
+    name: Calculate Version
+    uses: ./.github/workflows/reusable-versioning.yml # Correctly call as a reusable workflow
     needs: initialize_ci
-    outputs:
-      calculated_version: ${{ steps.version.outputs.calculated-version }}
-      build_test_status: ${{ steps.build_test.outputs.status }}
-      build_artifact_name: ${{ steps.build_test.outputs.build-artifact-name }} # Name of the .zip package artifact
-      test_results_artifact_name: ${{ steps.build_test.outputs.test-results-artifact-name }}
-      published_output_path: ${{ steps.build_test.outputs.published-output-path }} # Path where dotnet publish placed files
+    secrets: inherit # Pass secrets if the reusable workflow needs them (e.g., GITHUB_TOKEN if reusable-versioning needs to checkout)
+    with:
+      strategy: ${{ needs.initialize_ci.outputs.versioning_strategy }}
+      prerelease-suffix-override: ${{ needs.initialize_ci.outputs.version_prerelease_suffix }}
+      fetch-depth: 0 # Assuming reusable-versioning.yml defines this input and handles checkout
+    # Ensure your ./.github/workflows/reusable-versioning.yml has an output named 'calculated-version'.
+    # Example structure in reusable-versioning.yml:
+    # on:
+    #   workflow_call:
+    #     inputs:
+    #       strategy:
+    #         required: true
+    #         type: string
+    #       prerelease-suffix-override:
+    #         required: false
+    #         type: string
+    #       fetch-depth:
+    #         required: false
+    #         type: string # or number
+    #         default: '0'
+    #     outputs:
+    #       calculated-version:
+    #         description: "The calculated semantic version"
+    #         value: ${{ jobs.versioning_job_within_reusable.outputs.version_output_from_that_job }}
+    # jobs:
+    #   versioning_job_within_reusable:
+    #     runs-on: ubuntu-latest
+    #     outputs:
+    #       version_output_from_that_job: ${{ steps.gitversion.outputs.semVer }} # Or however it's derived
+    #     steps:
+    #       - uses: actions/checkout@v4
+    #         with:
+    #           fetch-depth: ${{ inputs.fetch-depth }}
+    #       - name: Install GitVersion
+    #         uses: gittools/actions/gitversion/setup@v1.1.1
+    #         with:
+    #           versionSpec: '5.x' # Or your desired version
+    #       - name: Determine Version
+    #         id: gitversion
+    #         uses: gittools/actions/gitversion/execute@v1.1.1
+    #         # Add with: { overrideConfig: ... } if needed for prerelease-suffix-override logic
 
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+  build_and_test_application: # New job for build/test
+    name: Build, Test & Package Application
+    uses: ./.github/workflows/reusable-build-test-dotnet.yml
+    needs: [initialize_ci, calculate_version]
+    secrets: # Pass necessary secrets
+      NUGET_FEED_AUTH_TOKEN: ${{ secrets.NUGET_FEED_AUTH_TOKEN_CI }}
+    with:
+      solution-path: '**/*.sln'
+      build-configuration: 'Release'
+      dotnet-version-to-use: '8.0.x' # Or from input
+      run-tests: true
+      package-application: true
+      publish-output-directory: './app-publish'
+      artifact-name-prefix: ${{ needs.initialize_ci.outputs.build_artifact_prefix }}-${{ needs.calculate_version.outputs.calculated-version }}
+      upload-build-artifacts: true
+      upload-test-results-artifact: true
+    # Outputs from reusable-build-test-dotnet.yml:
+    # status, build-artifact-name, test-results-artifact-name, published-output-path
 
-      - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: |
-            6.0.x
-            7.0.x
-            8.0.x
+  # The old 'version_and_build' job is now effectively replaced by 'calculate_version' and 'build_and_test_application'.
+  # We need to adjust subsequent jobs that depended on 'version_and_build'.
 
-      - name: Calculate Version
-        id: version
-        uses: ./.github/workflows/reusable-versioning.yml
-        with:
-          strategy: ${{ needs.initialize_ci.outputs.versioning_strategy }}
-          prerelease-suffix-override: ${{ needs.initialize_ci.outputs.version_prerelease_suffix }} # Pass determined suffix
-          fetch-depth: 0 # Ensure full history for GitVersion
-
-      - name: Build, Test, and Package Application
-        id: build_test
-        uses: ./.github/workflows/reusable-build-test-dotnet.yml
-        with:
-          solution-path: '**/*.sln'
-          build-configuration: 'Release'
-          dotnet-version-to-use: '8.0.x' # Or from matrix/input
-          run-tests: true
-          package-application: true # Always package in this CI workflow
-          publish-output-directory: './app-publish' # Standard output path for packaged app
-          artifact-name-prefix: ${{ needs.initialize_ci.outputs.build_artifact_prefix }}-${{ steps.version.outputs.calculated-version }}
-          upload-build-artifacts: true # Upload the packaged application as an artifact
-          upload-test-results-artifact: true
-          NUGET_FEED_AUTH_TOKEN: ${{ secrets.NUGET_FEED_AUTH_TOKEN_CI }} # Optional, if restore needs private feeds
-
-  publish_package:
-    name: Publish NuGet Package
+  prepare_nuget_artifacts_job:
+    name: Prepare NuGet Artifacts
     runs-on: ubuntu-latest
-    needs: [initialize_ci, version_and_build]
-    if: needs.version_and_build.outputs.build_test_status == 'success' && needs.version_and_build.outputs.calculated_version != ''
+    needs: [build_and_test_application]
+    if: needs.build_and_test_application.outputs.status == 'success'
     outputs:
-      nuget_publish_status: ${{ steps.publish_nuget.outputs.status }}
-      published_nuget_packages_count: ${{ steps.publish_nuget.outputs.published-count }}
-
+      nuget_package_path: ./.nuget_packages # Output the path for the next job
     steps:
-      - name: Download Published Application Artifact (contains .nupkg)
+      - name: Download Published Application Artifact
         uses: actions/download-artifact@v4
         with:
-          name: ${{ needs.version_and_build.outputs.build_artifact_name }} # This is the .zip artifact
-          path: ${{ needs.version_and_build.outputs.published_output_path }} # Download to the publish output path
+          name: ${{ needs.build_and_test_application.outputs.build-artifact-name }}
+          path: ./.nuget_packages
 
-      - name: Publish NuGet Package
-        id: publish_nuget
-        uses: ./.github/workflows/reusable-publish-nuget.yml
-        with:
-          working-directory: ${{ needs.version_and_build.outputs.published_output_path }} # Assume .nupkg are at the root of the published output
-          package-path: '*.nupkg' # Search for .nupkg files in the downloaded artifact path
-          version: ${{ needs.version_and_build.outputs.calculated_version }}
-          nuget-feed-url: "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json" # Default to GitHub Packages for the org/user
-          is-prerelease: ${{ needs.initialize_ci.outputs.is_main_branch == 'false' }}
-          skip-duplicate: true
-          NUGET_API_KEY: ${{ secrets.GITHUB_TOKEN }} # Use GITHUB_TOKEN for GitHub Packages
+  invoke_publish_nuget_reusable_workflow_job:
+    name: Publish NuGet Packages (via Reusable Workflow)
+    uses: ./.github/workflows/reusable-publish-nuget.yml
+    needs: [initialize_ci, calculate_version, build_and_test_application, prepare_nuget_artifacts_job]
+    if: needs.build_and_test_application.outputs.status == 'success' && needs.calculate_version.outputs.calculated-version != '' && needs.prepare_nuget_artifacts_job.outputs.nuget_package_path != ''
+    secrets:
+      NUGET_API_KEY: ${{ secrets.GITHUB_TOKEN }} # Assuming GITHUB_TOKEN for GitHub Packages
+    with:
+      working-directory: ${{ needs.prepare_nuget_artifacts_job.outputs.nuget_package_path }}
+      package-path: '*.nupkg'
+      version: ${{ needs.calculate_version.outputs.calculated-version }}
+      nuget-feed-url: "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json"
+      is-prerelease: ${{ needs.initialize_ci.outputs.is_main_branch == 'false' }}
+      skip-duplicate: true
+    # Outputs from reusable-publish-nuget.yml: status, published-packages, published-count
+    # These are implicitly available as needs.invoke_publish_nuget_reusable_workflow_job.outputs.*
 
   trigger_dev_deployment:
     name: Trigger DEV Deployment
     runs-on: ubuntu-latest
-    needs: [initialize_ci, version_and_build, publish_package] # Depends on successful build and optional publish
-    if: needs.version_and_build.outputs.build_test_status == 'success' # Only trigger if build was successful
+    needs: [initialize_ci, calculate_version, build_and_test_application, invoke_publish_nuget_reusable_workflow_job] # Adjusted dependencies
+    if: needs.build_and_test_application.outputs.status == 'success' && (needs.invoke_publish_nuget_reusable_workflow_job.outputs.status == 'success' || needs.invoke_publish_nuget_reusable_workflow_job.outputs.status == 'skipped' || ${{ needs.initialize_ci.outputs.is_main_branch == 'true' }})
 
     steps:
       - name: Dispatch DEV Deployment Workflow
         uses: benc-uk/workflow-dispatch@v1
         with:
-          workflow: unified-cd-workflow.yml # Name of the CD workflow file
-          token: ${{ secrets.WORKFLOW_DISPATCH_PAT }} # PAT with workflow write scope is required
-          inputs: | # Use the pipe for a multi-line string, ensuring valid JSON
+          workflow: unified-cd-workflow.yml
+          token: ${{ secrets.WORKFLOW_DISPATCH_PAT }}
+          inputs: |
             {
-              "version_to_deploy": "${{ needs.version_and_build.outputs.calculated_version }}",
-              "source_artifact_name": "${{ needs.version_and_build.outputs.build_artifact_name }}"
+              "version_to_deploy": "${{ needs.calculate_version.outputs.calculated-version }}",
+              "source_artifact_name": "${{ needs.build_and_test_application.outputs.build-artifact-name }}"
             }
-          ref: ${{ github.ref }} # Dispatch on the same ref/branch
+          ref: ${{ github.ref }}
 
-  report_ci_status:
-    name: Report CI Status
+  gather_reporting_data_job:
+    name: Gather Reporting Data
     runs-on: ubuntu-latest
-    needs: [initialize_ci, version_and_build, publish_package, trigger_dev_deployment]
-    if: always() # Run even if previous jobs fail to report the failure
+    needs: [initialize_ci, calculate_version, build_and_test_application, invoke_publish_nuget_reusable_workflow_job, trigger_dev_deployment]
+    if: always()
+    outputs:
+      final_ci_status: ${{ steps.calculate_overall_status.outputs.ci_status }}
+      # Pass through other details needed by the notification job
+      calculated_version_output: ${{ needs.calculate_version.outputs.calculated-version }}
+      build_status_output: ${{ needs.build_and_test_application.outputs.status }}
+      publish_status_output: ${{ needs.invoke_publish_nuget_reusable_workflow_job.outputs.status }}
+      published_count_output: ${{ needs.invoke_publish_nuget_reusable_workflow_job.outputs.published-count }}
+      deploy_trigger_result_output: ${{ needs.trigger_dev_deployment.result }}
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        
-      - name: Calculate CI Status
-        id: calculate_status
+      - name: Calculate CI Overall Status
+        id: calculate_overall_status
         run: |
-          BUILD_SUCCESS=${{ needs.version_and_build.outputs.build_test_status == 'success' }}
-          PUBLISH_SUCCESS=${{ needs.publish_package.result == 'success' || needs.publish_package.result == 'skipped' || needs.publish_package.result == '' }}
-          DEPLOY_SUCCESS=${{ needs.trigger_dev_deployment.result == 'success' }}
-          
-          if [[ "$BUILD_SUCCESS" == "true" && "$PUBLISH_SUCCESS" == "true" && "$DEPLOY_SUCCESS" == "true" ]]; then
-            echo "status=success" >> $GITHUB_OUTPUT
-          else
-            echo "status=failure" >> $GITHUB_OUTPUT
+          BUILD_STATUS="${{ needs.build_and_test_application.outputs.status }}"
+          PUBLISH_STATUS="${{ needs.invoke_publish_nuget_reusable_workflow_job.outputs.status }}"
+          IS_PUBLISH_OK="false"
+          if [[ "$PUBLISH_STATUS" == "success" || "$PUBLISH_STATUS" == "skipped" ]]; then
+            IS_PUBLISH_OK="true"
           fi
-      
-      - name: Notify CI Status
-        uses: ./.github/workflows/reusable-observability-hooks.yml
-        with:
-          status: ${{ steps.calculate_status.outputs.status }}
-          workflow-name: "${{ github.workflow }} on ${{ github.ref_name }}"
-          branch-name: ${{ github.ref_name }}
-          commit-sha: ${{ github.sha }}
-          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          message-details: |
-            Version: `${{ needs.version_and_build.outputs.calculated_version }}`
-            Build & Test: `${{ needs.version_and_build.outputs.build_test_status }}`
-            NuGet Publish: `${{ needs.publish_package.outputs.nuget_publish_status || 'skipped' }}` (Published: `${{ needs.publish_package.outputs.published_nuget_packages_count || 0 }}`)
-            DEV Dispatch Trigger: `${{ needs.trigger_dev_deployment.result }}`
-          notification-channel: 'slack' # Or your preferred channel
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL_CI }}
+
+          DEPLOY_RESULT="${{ needs.trigger_dev_deployment.result }}"
+          IS_DEPLOY_OK="false"
+          if [[ "$DEPLOY_RESULT" == "success" || "$DEPLOY_RESULT" == "skipped" ]]; then
+            IS_DEPLOY_OK="true"
+          fi
+          
+          FINAL_CI_STATUS="failure"
+          if [[ "$BUILD_STATUS" == "success" && "$IS_PUBLISH_OK" == "true" && "$IS_DEPLOY_OK" == "true" ]]; then
+            FINAL_CI_STATUS="success"
+          fi
+          echo "ci_status=$FINAL_CI_STATUS" >> $GITHUB_OUTPUT
+
+  send_notifications_job:
+    name: Send CI Notifications
+    uses: ./.github/workflows/reusable-observability-hooks.yml
+    needs: [gather_reporting_data_job] # Depends on the job that calculates final status and gathers all data
+    if: always()
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL_CI }}
+      # Add other secrets the reusable-observability-hooks.yml might need, e.g., TEAMS_WEBHOOK_URL, GITHUB_TOKEN for PR comments
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # If PR comments are used
+    with:
+      status: ${{ needs.gather_reporting_data_job.outputs.final_ci_status }}
+      workflow-name: "${{ github.workflow }} on ${{ github.ref_name }}"
+      branch-name: ${{ github.ref_name }}
+      commit-sha: ${{ github.sha }}
+      run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      message-details: |
+        Version: `${{ needs.gather_reporting_data_job.outputs.calculated_version_output }}`
+        Build & Test: `${{ needs.gather_reporting_data_job.outputs.build_status_output }}`
+        NuGet Publish: `${{ needs.gather_reporting_data_job.outputs.publish_status_output || 'N/A' }}` (Published: `${{ needs.gather_reporting_data_job.outputs.published_count_output || 0 }}`)
+        DEV Dispatch Trigger: `${{ needs.gather_reporting_data_job.outputs.deploy_trigger_result_output }}`
+      notification-channel: 'slack' # Or make this an input to ci-unified.yml
+      # Pass other inputs for reusable-observability-hooks.yml as needed
+      # pr-number: ${{ github.event.pull_request.number }} # Example if for PR context
