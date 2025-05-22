@@ -97,13 +97,26 @@ jobs:
         with:
           versionSpec: '5.x' # Specify major version of GitVersion
 
+      - name: Check if GitVersion config file exists
+        if: inputs.strategy == 'gitversion'
+        id: check_gitversion_config
+        shell: bash
+        run: |
+          if [[ -f "${{ inputs.gitversion-config-file }}" ]]; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "::info::GitVersion configuration file found at ${{ inputs.gitversion-config-file }}."
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "::warning::GitVersion configuration file not found at ${{ inputs.gitversion-config-file }}. GitVersion will run with default settings."
+          fi
+
       - name: Execute GitVersion
         if: inputs.strategy == 'gitversion'
         id: gitversion_execute # id for accessing outputs
         uses: gittools/actions/gitversion/execute@v1.1.1
         with:
-          useConfigFile: true
-          configFilePath: ${{ inputs.gitversion-config-file }}
+          useConfigFile: ${{ steps.check_gitversion_config.outputs.exists == 'true' }}
+          configFilePath: ${{ steps.check_gitversion_config.outputs.exists == 'true' && inputs.gitversion-config-file || '' }} # Provide path only if it exists and useConfigFile is true
           # Additional arguments can be passed if needed via `additionalArguments`
           # Example: overridebranchname if github.ref is not what GitVersion expects
           # overrideconfig: # Example to dynamically adjust config based on prerelease-suffix-override
