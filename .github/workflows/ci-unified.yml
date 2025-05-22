@@ -186,7 +186,7 @@ jobs:
               "source_artifact_name": "${{ needs.build_and_test_application.outputs.build-artifact-name }}",
               "target_environment_type": "dev"
             }
-          ref: ${{ github.ref }}
+          ref: ${{ github.ref_name }}
 
   gather_reporting_data_job:
     name: Gather Reporting Data
