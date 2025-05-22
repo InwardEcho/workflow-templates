@@ -102,7 +102,7 @@ jobs:
     runs-on: ubuntu-latest # Or make this an input: runs-on: ${{ inputs.runner-os || 'ubuntu-latest' }}
     outputs:
       job_status: ${{ steps.set_final_status.outputs.status }}
-      build_artifact_name_output: ${{ steps.upload_build_artifact.outputs.artifact-name }}
+      build_artifact_name_output: ${{ steps.set_build_artifact_name_output_value.outputs.name }}
       test_results_artifact_name_output: ${{ steps.upload_test_results.outputs.artifact-name }}
       published_output_path_output: ${{ inputs.publish-output-directory }}
 
@@ -288,6 +288,18 @@ jobs:
           name: ${{ inputs.artifact-name-prefix }}-app-package
           path: ${{ inputs.publish-output-directory }}
           if-no-files-found: warn
+
+      - name: Set Build Artifact Name Output Value
+        id: set_build_artifact_name_output_value
+        shell: bash
+        run: |
+          name_to_set=""
+          if [[ "${{ inputs.package-application }}" == "true" && \
+                "${{ inputs.upload-build-artifacts }}" == "true" && \
+                "${{ steps.publish_app.outcome }}" == "success" ]]; then
+            name_to_set="${{ inputs.artifact-name-prefix }}-app-package"
+          fi
+          echo "name=$name_to_set" >> "$GITHUB_OUTPUT"
 
       - name: Set Final Status
         id: set_final_status
