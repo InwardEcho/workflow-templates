@@ -180,6 +180,7 @@ jobs:
           workflow: unified-cd-workflow.yml
           repo: InwardEcho/workflow-templates
           token: ${{ secrets.WORKFLOW_DISPATCH_PAT }}
+          ref: 'main'
           inputs: |
             {
               "version_to_deploy": "${{ needs.calculate_version.outputs.calculated-version }}",
