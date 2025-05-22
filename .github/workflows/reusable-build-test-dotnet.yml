@@ -190,7 +190,85 @@ jobs:
       - name: Publish application
         id: publish_app
         if: inputs.package-application == true && steps.build.outcome == 'success'
-        run: dotnet publish "${{ steps.resolve_paths.outputs.resolved_solution_path }}" --configuration "${{ inputs.build-configuration }}" --no-build --no-restore -o "${{ inputs.publish-output-directory }}"
+        run: |
+          set -e # Exit immediately if a command exits with a non-zero status.
+
+          resolved_path="${{ steps.resolve_paths.outputs.resolved_solution_path }}"
+          output_dir="${{ inputs.publish-output-directory }}"
+          config="${{ inputs.build-configuration }}"
+
+          echo "Resolved path for publish: $resolved_path"
+          echo "Target output directory: $output_dir"
+          echo "Build configuration: $config"
+
+          if [[ "$resolved_path" == *.sln ]]; then
+            echo "::group::Publishing projects in solution: $resolved_path"
+            
+            solution_dir=$(dirname "$resolved_path")
+            echo "Solution directory: $solution_dir"
+            
+            # Create the main output directory if it doesn't exist
+            mkdir -p "$output_dir"
+
+            # Store current directory and cd into solution directory
+            # This is important as 'dotnet sln list' gives paths relative to the solution file.
+            original_dir=$(pwd)
+            if ! cd "$solution_dir"; then
+              echo "::error::Failed to change directory to solution directory: $solution_dir"
+              exit 1
+            fi
+            
+            # Get list of project paths relative to the solution directory.
+            # Filter for project files (csproj, fsproj, vbproj) and ensure non-empty lines.
+            # The '|| true' ensures that if grep finds nothing, the command doesn't fail the script.
+            projects_to_publish=$(dotnet sln "$(basename "$resolved_path")" list 2>/dev/null | grep -E '\.(cs|fs|vb)proj$' | awk 'NF > 0 {print}' || true)
+            
+            # Go back to original directory
+            if ! cd "$original_dir"; then
+              echo "::error::Failed to change back to original directory: $original_dir"
+              # Continue if possible, but this is unexpected.
+            fi
+
+            if [ -z "$projects_to_publish" ]; then
+              echo "::warning::No publishable projects found in solution '$resolved_path' using 'dotnet sln list'."
+            else
+              echo "Projects to publish (paths are relative to: $solution_dir):"
+              echo "$projects_to_publish"
+              
+              echo "$projects_to_publish" | while IFS= read -r project_relative_path; do
+                if [ -z "$project_relative_path" ]; then # Skip empty lines, if any
+                  continue
+                fi
+                
+                # Construct the full path to the project file
+                project_full_path="$solution_dir/$project_relative_path"
+                
+                # Get the project filename (e.g., MyProject.csproj)
+                project_filename=$(basename "$project_relative_path")
+                # Create a subdirectory name from the project filename (e.g., MyProject.csproj -> MyProject)
+                project_name_for_dir=$(echo "$project_filename" | sed 's/\.\(cs\|fs\|vb\)proj$//')
+
+                # Verify the project file actually exists before attempting to publish
+                if [ ! -f "$project_full_path" ]; then
+                  echo "::warning::Project file '$project_full_path' (listed by 'dotnet sln list' but not found on disk). Skipping."
+                  continue
+                fi
+                
+                target_project_output_dir="$output_dir/$project_name_for_dir"
+                echo "Publishing project '$project_full_path' to '$target_project_output_dir'"
+                mkdir -p "$target_project_output_dir"
+                dotnet publish "$project_full_path" --configuration "$config" --no-build --no-restore -o "$target_project_output_dir"
+              done
+            fi
+            echo "::endgroup::"
+          else
+            # This is a single project file, publish directly
+            echo "Publishing single project: $resolved_path to $output_dir"
+            mkdir -p "$output_dir"
+            dotnet publish "$resolved_path" --configuration "$config" --no-build --no-restore -o "$output_dir"
+          fi
+
+          echo "Publish step completed."
         continue-on-error: false
 
       - name: Upload Test Results Artifact

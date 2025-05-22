@@ -178,6 +178,7 @@ jobs:
         uses: benc-uk/workflow-dispatch@v1
         with:
           workflow: unified-cd-workflow.yml
+          repo: InwardEcho/workflow-templates
           token: ${{ secrets.WORKFLOW_DISPATCH_PAT }}
           inputs: |
             {
