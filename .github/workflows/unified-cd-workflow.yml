@@ -5,7 +5,7 @@
 name: Unified CD Workflow
 
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       version_to_deploy:
         description: 'Version to deploy (e.g., 1.2.3 or 1.2.3-feature-xyz.5)'
@@ -18,11 +18,7 @@ on:
       target_environment_type:
         description: 'Logical environment to deploy to'
         required: true
-        type: choice
-        options:
-          - dev
-          - test
-          - prod
+        type: string
 
 permissions:
   contents: read      # To checkout code
