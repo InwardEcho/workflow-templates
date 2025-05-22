@@ -115,42 +115,6 @@ jobs:
       strategy: ${{ needs.initialize_ci.outputs.versioning_strategy }}
       prerelease-suffix-override: ${{ needs.initialize_ci.outputs.version_prerelease_suffix }}
       fetch-depth: 0 # Assuming reusable-versioning.yml defines this input and handles checkout
-    # Ensure your ./.github/workflows/reusable-versioning.yml has an output named 'calculated-version'.
-    # Example structure in reusable-versioning.yml:
-    # on:
-    #   workflow_call:
-    #     inputs:
-    #       strategy:
-    #         required: true
-    #         type: string
-    #       prerelease-suffix-override:
-    #         required: false
-    #         type: string
-    #       fetch-depth:
-    #         required: false
-    #         type: string # or number
-    #         default: '0'
-    #     outputs:
-    #       calculated-version:
-    #         description: "The calculated semantic version"
-    #         value: ${{ jobs.versioning_job_within_reusable.outputs.version_output_from_that_job }}
-    # jobs:
-    #   versioning_job_within_reusable:
-    #     runs-on: ubuntu-latest
-    #     outputs:
-    #       version_output_from_that_job: ${{ steps.gitversion.outputs.semVer }} # Or however it's derived
-    #     steps:
-    #       - uses: actions/checkout@v4
-    #         with:
-    #           fetch-depth: ${{ inputs.fetch-depth }}
-    #       - name: Install GitVersion
-    #         uses: gittools/actions/gitversion/setup@v1.1.1
-    #         with:
-    #           versionSpec: '5.x' # Or your desired version
-    #       - name: Determine Version
-    #         id: gitversion
-    #         uses: gittools/actions/gitversion/execute@v1.1.1
-    #         # Add with: { overrideConfig: ... } if needed for prerelease-suffix-override logic
 
   build_and_test_application: # New job for build/test
     name: Build, Test & Package Application
@@ -170,9 +134,6 @@ jobs:
       upload-test-results-artifact: true
     # Outputs from reusable-build-test-dotnet.yml:
     # status, build-artifact-name, test-results-artifact-name, published-output-path
-
-  # The old 'version_and_build' job is now effectively replaced by 'calculate_version' and 'build_and_test_application'.
-  # We need to adjust subsequent jobs that depended on 'version_and_build'.
 
   prepare_nuget_artifacts_job:
     name: Prepare NuGet Artifacts
