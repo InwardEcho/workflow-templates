@@ -1,0 +1,87 @@
+# Composite Action for Promoting Canary to Primary
+# Filename: .github/actions/composite-promote-canary/action.yml
+# Purpose: Promotes a successful canary deployment to 100% traffic.
+
+name: 'Composite Promote Canary to Primary'
+description: 'A composite action to promote a canary deployment to primary/production.'
+
+inputs:
+  environment-name:
+    description: 'Base environment name (e.g., prod).'
+    required: true
+  version:
+    description: 'Version string of the application being promoted.'
+    required: true
+  deployment-target-type:
+    description: "Type of deployment target (e.g., 'azure-app-service-slots', 'kubernetes-ingress', 'custom')."
+    required: true
+  # Azure App Service Specific Inputs (example)
+  azure-app-name:
+    description: 'Name of the Azure App Service.'
+    required: false # Required if target is azure-app-service-slots
+  azure-canary-slot-name:
+    description: 'Name of the Azure App Service slot that served as canary.'
+    required: false # Required if target is azure-app-service-slots
+  azure-production-slot-name:
+    description: 'Name of the Azure App Service production slot to promote to.'
+    required: false # Required if target is azure-app-service-slots
+    default: 'production'
+  health-check-url-primary: # Used as a proxy for deployment_url output
+    description: 'Health check URL for the primary production instance (used for output if actual URL not determined).'
+    required: false # May not always be available or needed if app name is sufficient
+  # artifact-path is not typically needed for promotion if it's a slot swap or traffic shift
+  # Secrets are handled via env context from the caller
+
+outputs:
+  status:
+    description: "Status of the promotion ('success' or 'failure')."
+    value: ${{ steps.deploy_primary.outcome }}
+  deployment_url:
+    description: 'URL of the production application after promotion.'
+    value: ${{ steps.deploy_primary.outputs.deployment_url }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Promote Canary to 100%
+      id: deploy_primary
+      shell: bash
+      run: |
+        echo "Promoting version ${{ inputs.version }} to 100% for ${{ inputs.environment-name }}..."
+        echo "Target type: ${{ inputs.deployment-target-type }}"
+
+        DEPLOYMENT_URL_OUTPUT=""
+        # Determine a default primary URL if possible, can be overridden
+        if [[ -n "${{ inputs.health-check-url-primary }}" ]]; then
+          DEPLOYMENT_URL_OUTPUT="${{ inputs.health-check-url-primary }}"
+        elif [[ "${{ inputs.deployment-target-type }}" == "azure-app-service-slots" && -n "${{ inputs.azure-app-name }}" ]]; then
+          # Construct a typical Azure App Service URL if health-check-url-primary is not given
+          DEPLOYMENT_URL_OUTPUT="https://${{ inputs.azure-app-name }}.azurewebsites.net"
+        fi
+
+        if [[ "${{ inputs.deployment-target-type }}" == "azure-app-service-slots" ]]; then
+          echo "Swapping canary slot ('${{ inputs.azure-canary-slot-name }}') to production ('${{ inputs.azure-production-slot-name }}') and routing 100% traffic for App: ${{ inputs.azure-app-name }}."
+          # Placeholder for actual Azure CLI commands
+          # Example: az webapp deployment slot swap --name ${{ inputs.azure-app-name }} ... --slot ${{ inputs.azure-canary-slot-name }} --target-slot ${{ inputs.azure-production-slot-name }}
+          # Example: az webapp traffic-routing set ... --name ${{ inputs.azure-app-name }} --distribution ${{ inputs.azure-production-slot-name }}=100
+          echo "::warning::Azure App Service slot promotion logic placeholder."
+          # If the primary slot has a specific known URL different from the default, set it.
+          # For Azure, the main app URL usually points to the production slot after swap.
+          # ACTUAL_PRIMARY_URL=$(az webapp show --name "${{ inputs.azure-app-name }}" --query "defaultHostName" -o tsv)
+          # if [ -n "$ACTUAL_PRIMARY_URL" ]; then DEPLOYMENT_URL_OUTPUT="https://$ACTUAL_PRIMARY_URL"; fi
+
+        elif [[ "${{ inputs.deployment-target-type }}" == "kubernetes-ingress" ]]; then
+          echo "::warning::Kubernetes Ingress/Service Mesh promotion logic placeholder."
+          # Logic to shift 100% traffic to the new version in Kubernetes
+        else
+          echo "::error::Unsupported promotion target type: ${{ inputs.deployment-target-type }}"
+          exit 1
+        fi
+        
+        echo "Promotion to primary completed."
+        echo "deployment_url=$DEPLOYMENT_URL_OUTPUT" >> $GITHUB_OUTPUT
+      env:
+        # Similar to deploy-canary, assumes AZURE_CREDENTIALS_CALLER (or other necessary secrets)
+        # are set in the environment by the calling workflow.
+        AZURE_CREDENTIALS_FOR_SCRIPT: ${{ env.AZURE_CREDENTIALS_CALLER }}
+      continue-on-error: false # Promotion failure is critical

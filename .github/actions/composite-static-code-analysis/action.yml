@@ -1,0 +1,142 @@
+# Composite Action for Static Code Analysis
+# Filename: .github/actions/composite-static-code-analysis/action.yml
+# Purpose: Performs static code analysis, primarily with SonarQube.
+
+name: 'Composite Static Code Analysis'
+description: 'A composite action to perform static code analysis.'
+
+inputs:
+  solution-path:
+    description: 'Path to the .sln or relevant project files for analysis context.'
+    required: false
+    default: '.'
+  fail-on-issues:
+    description: 'Whether to fail if Quality Gate fails (SonarQube) or issues exceed threshold.'
+    required: false
+    default: 'true' # String for composite action
+  sonarqube-project-key:
+    description: 'SonarQube project key.'
+    required: false # Required if using SonarQube
+  sonarqube-host-url:
+    description: 'SonarQube server URL.'
+    required: false # Required if using SonarQube
+  sonarqube-organization:
+    description: 'SonarQube organization key.'
+    required: false
+  dotnet-version-for-scanner:
+    description: '.NET SDK version for SonarScanner for .NET.'
+    required: false
+    default: '7.0.x'
+  extra-scanner-args:
+    description: 'Additional arguments for SonarScanner or other tools.'
+    required: false
+    default: ''
+  # GITHUB_TOKEN_CALLER and SONAR_TOKEN_CALLER are expected in `env` from the caller
+
+outputs:
+  status:
+    description: "Status of the SAST execution ('success' or 'failure')."
+    value: ${{ steps.set_final_status.outputs.status }}
+  analysis-url:
+    description: 'URL to the analysis report (e.g., SonarQube dashboard).'
+    value: ${{ steps.construct_sonar_url.outputs.dashboard_url || '' }}
+  quality-gate-status:
+    description: 'Status of the SonarQube quality gate (passed/failed/unknown).'
+    # This is inferred from the sonarqube_scan step outcome if it ran.
+    value: ${{ (steps.sonarqube_scan.outcome == 'success') ? 'passed' : (steps.sonarqube_scan.outcome == 'failure' ? 'failed' : 'unknown') }}
+
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0 # Full history for SonarQube
+
+    - name: Setup .NET SDK (for SonarScanner for .NET)
+      if: inputs.sonarqube-host-url != '' && inputs.sonarqube-project-key != '' # Only if SonarQube is configured
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ inputs.dotnet-version-for-scanner }}
+
+    - name: SonarQube Scan
+      id: sonarqube_scan
+      if: inputs.sonarqube-host-url != '' && inputs.sonarqube-project-key != '' && env.SONAR_TOKEN_CALLER != '' && env.GITHUB_TOKEN_CALLER != ''
+      uses: sonarsource/sonarqube-scan-action@master # Use a specific version in production
+      env:
+        SONAR_TOKEN: ${{ env.SONAR_TOKEN_CALLER }}
+        SONAR_HOST_URL: ${{ inputs.sonarqube-host-url }}
+        GITHUB_TOKEN: ${{ env.GITHUB_TOKEN_CALLER }} # For PR decoration
+      with:
+        projectBaseDir: ${{ inputs.solution-path }}
+        args: >
+          -Dsonar.projectKey=${{ inputs.sonarqube-project-key }}
+          ${{ inputs.sonarqube-organization && format('-Dsonar.organization={0}', inputs.sonarqube-organization) || '' }}
+          -Dsonar.scm.provider=git
+          -Dsonar.dotnet.excludeTestProjects=true
+          -Dsonar.coverage.exclusions=**/Tests/**,**/Test/**
+          ${{ inputs.extra-scanner-args }}
+      # The action fails if QG fails (default behavior with sonar.qualitygate.wait=true)
+
+    - name: Construct SonarQube Dashboard URL
+      id: construct_sonar_url
+      # Attempt to construct if SonarQube was configured, regardless of scan outcome
+      if: inputs.sonarqube-host-url != '' && inputs.sonarqube-project-key != ''
+      shell: bash
+      run: |
+        DASHBOARD_URL_VALUE=""
+        if [[ -n "${{ inputs.sonarqube-host-url }}" && -n "${{ inputs.sonarqube-project-key }}" ]]; then
+          DASHBOARD_URL_VALUE="${{ inputs.sonarqube-host-url }}/dashboard?id=${{ inputs.sonarqube-project-key }}"
+          # For PR analysis, the URL might include the PR number.
+          # Example:
+          # if [[ -n "${{ github.event.pull_request.number }}" ]]; then
+          #   DASHBOARD_URL_VALUE="${{ inputs.sonarqube-host-url }}/dashboard?id=${{ inputs.sonarqube-project-key }}&pullRequest=${{ github.event.pull_request.number }}"
+          # fi
+        fi
+        echo "dashboard_url=$DASHBOARD_URL_VALUE" >> $GITHUB_OUTPUT
+
+    - name: Set Final Status
+      id: set_final_status
+      shell: bash
+      run: |
+        FINAL_STATUS="success" # Default to success
+        # Convert GHA boolean context to bash strings for reliable comparison
+        SONAR_CONFIGURED_HOST_KEY=$([[ "${{ inputs.sonarqube-host-url }}" != "" && "${{ inputs.sonarqube-project-key }}" != "" ]] && echo "true" || echo "false")
+        SONAR_TOKEN_PROVIDED=$([[ "${{ env.SONAR_TOKEN_CALLER }}" != "" ]] && echo "true" || echo "false")
+        GITHUB_TOKEN_PROVIDED=$([[ "${{ env.GITHUB_TOKEN_CALLER }}" != "" ]] && echo "true" || echo "false") # GITHUB_TOKEN is needed for PR decoration
+
+        if [[ "$SONAR_CONFIGURED_HOST_KEY" == "true" && "$SONAR_TOKEN_PROVIDED" == "true" && "$GITHUB_TOKEN_PROVIDED" == "true" ]]; then
+          # SonarQube was fully configured and expected to run
+          SONAR_STEP_OUTCOME="${{ steps.sonarqube_scan.outcome }}"
+          if [[ "$SONAR_STEP_OUTCOME" == "failure" && "${{ inputs.fail-on-issues }}" == "true" ]]; then
+            FINAL_STATUS="failure"
+            echo "::error::Static analysis (SonarQube) failed or Quality Gate did not pass."
+          elif [[ "$SONAR_STEP_OUTCOME" == "skipped" ]]; then
+            FINAL_STATUS="failure"
+            echo "::error::SonarQube scan step was unexpectedly skipped despite configuration. Check action logs and ensure GITHUB_TOKEN_CALLER is also provided for PR analysis."
+          fi
+        elif [[ "$SONAR_CONFIGURED_HOST_KEY" == "true" && ("$SONAR_TOKEN_PROVIDED" == "false" || "$GITHUB_TOKEN_PROVIDED" == "false") ]]; then
+          # Configured (host/key present) but one or both tokens missing
+          FINAL_STATUS="failure"
+          MISSING_TOKENS=""
+          if [[ "$SONAR_TOKEN_PROVIDED" == "false" ]]; then MISSING_TOKENS="SONAR_TOKEN_CALLER"; fi
+          if [[ "$GITHUB_TOKEN_PROVIDED" == "false" ]]; then 
+            if [[ -n "$MISSING_TOKENS" ]]; then MISSING_TOKENS="$MISSING_TOKENS and GITHUB_TOKEN_CALLER"; else MISSING_TOKENS="GITHUB_TOKEN_CALLER"; fi
+          fi
+          echo "::error::SonarQube analysis configured (host/key present), but $MISSING_TOKENS was not provided via env."
+        elif [[ "$SONAR_CONFIGURED_HOST_KEY" == "false" && ("$SONAR_TOKEN_PROVIDED" == "true" || "$GITHUB_TOKEN_PROVIDED" == "true") ]]; then
+          # Token(s) provided, but host or key missing - implies intent but misconfiguration
+          FINAL_STATUS="failure" 
+          echo "::warning::SonarQube token(s) (SONAR_TOKEN_CALLER or GITHUB_TOKEN_CALLER) were provided, but sonarqube-host-url or sonarqube-project-key is missing. SonarQube scan skipped due to incomplete configuration."
+        else
+          # Not configured for SonarQube (host/key missing) and no tokens provided. This is fine, analysis not intended.
+          echo "SonarQube analysis not configured (host, key, or tokens missing). Skipping SonarQube checks."
+        fi
+        
+        echo "status=$FINAL_STATUS" >> $GITHUB_OUTPUT
+      if: always()
+      env:
+        # Make env vars available to this step for conditional checks
+        SONAR_TOKEN_CALLER: ${{ env.SONAR_TOKEN_CALLER }}
+        GITHUB_TOKEN_CALLER: ${{ env.GITHUB_TOKEN_CALLER }}

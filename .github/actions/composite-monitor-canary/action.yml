@@ -1,0 +1,68 @@
+# Composite Action for Monitoring Canary Health
+# Filename: .github/actions/composite-monitor-canary/action.yml
+# Purpose: Monitors the health of a deployed canary instance.
+
+name: 'Composite Monitor Canary Health'
+description: 'A composite action to monitor the health of a canary deployment.'
+
+inputs:
+  health-check-url-canary:
+    description: 'Health check URL for the canary instance to monitor.'
+    required: true
+  observation-period-minutes:
+    description: 'Duration in minutes to monitor the canary deployment.'
+    required: false
+    default: '15' # String for composite action
+
+outputs:
+  canary_health: # 'healthy' or 'unhealthy'
+    description: "Health status of the canary after observation ('healthy' or 'unhealthy')."
+    value: ${{ steps.health_check_script.outputs.health_status }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Monitor Canary Instance
+      id: health_check_script
+      shell: bash
+      run: |
+        echo "Monitoring canary at ${{ inputs.health-check-url-canary }} for ${{ inputs.observation-period-minutes }} minutes..."
+        END_TIME=$(( $(date +%s) + ${{ inputs.observation-period-minutes }} * 60 ))
+        HEALTHY_STATUS="true" # Use a different variable name to avoid conflict if HEALTHY is an env var
+
+        while [[ $(date +%s) -lt $END_TIME ]]; do
+          # Using curl with a timeout for the check itself
+          if curl --output /dev/null --silent --head --fail --max-time 10 "${{ inputs.health-check-url-canary }}"; then
+            echo "Canary health check PASSED at $(date) for URL: ${{ inputs.health-check-url-canary }}"
+          else
+            echo "::error::Canary health check FAILED at $(date) for URL: ${{ inputs.health-check-url-canary }}"
+            HEALTHY_STATUS="false"
+            break # Exit loop on first failure
+          fi
+          # In a real scenario, you might also query metrics here (Prometheus, App Insights, etc.)
+          # and check against thresholds.
+          
+          # Determine sleep duration: either 60s or remaining time if less than 60s
+          current_time=$(date +%s)
+          remaining_time=$(( $END_TIME - $current_time ))
+          
+          if [[ $remaining_time -le 0 ]]; then
+            break # Observation period ended
+          fi
+          
+          sleep_duration=$(( remaining_time < 60 ? remaining_time : 60 ))
+          if [[ $sleep_duration -gt 0 ]]; then
+             echo "Sleeping for $sleep_duration seconds..."
+             sleep $sleep_duration
+          fi
+        done
+
+        if [[ "$HEALTHY_STATUS" == "true" ]]; then
+          echo "Canary monitoring completed. Canary is healthy."
+          echo "health_status=healthy" >> $GITHUB_OUTPUT
+        else
+          echo "Canary monitoring completed. Canary is unhealthy."
+          echo "health_status=unhealthy" >> $GITHUB_OUTPUT
+          # Do not exit with error here; let the calling workflow decide action based on output
+        fi
+      continue-on-error: false # If the script itself has an error (e.g. command not found), it should fail

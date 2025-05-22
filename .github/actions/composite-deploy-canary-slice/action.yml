@@ -1,0 +1,91 @@
+# Composite Action for Deploying a Canary Slice
+# Filename: .github/actions/composite-deploy-canary-slice/action.yml
+# Purpose: Deploys the canary version of an application.
+
+name: 'Composite Deploy Canary Slice'
+description: 'A composite action to deploy a canary slice of an application.'
+
+inputs:
+  environment-name:
+    description: 'Base environment name (e.g., prod).'
+    required: true
+  artifact-path:
+    description: 'Path to the application artifact to deploy.'
+    required: true
+  version:
+    description: 'Version string of the application being deployed.'
+    required: true
+  canary-percentage:
+    description: 'Percentage of traffic/users to route to the canary version.'
+    required: false
+    default: '10' # String for composite action
+  health-check-url-canary: # Used as a proxy for canary_instance_url output if actual URL not discoverable by script
+    description: 'Health check URL for the canary instance (used for output if actual URL not determined).'
+    required: true
+  deployment-target-type:
+    description: "Type of deployment target (e.g., 'azure-app-service-slots', 'kubernetes-ingress', 'custom')."
+    required: true
+  # Azure App Service Specific Inputs (example)
+  azure-app-name:
+    description: 'Name of the Azure App Service.'
+    required: false
+  azure-canary-slot-name:
+    description: 'Name of the Azure App Service slot for canary deployment.'
+    required: false
+    default: 'staging'
+  # Secrets are handled via env context from the caller
+
+outputs:
+  status:
+    description: "Status of the canary slice deployment ('success' or 'failure')."
+    value: ${{ steps.deploy_canary.outcome }}
+  canary_instance_url:
+    description: 'URL of the deployed canary instance.'
+    value: ${{ steps.deploy_canary.outputs.deployment_url }}
+
+runs:
+  using: "composite"
+  steps:
+    # It's often good practice for composite actions that might deal with code/scripts
+    # from the repository to perform their own checkout, unless explicitly designed not to.
+    # However, the original job did this, so we replicate.
+    - name: Checkout (if deploy scripts are in repo)
+      uses: actions/checkout@v4
+
+    - name: Deploy to Canary Instance/Slot
+      id: deploy_canary
+      shell: bash
+      run: |
+        echo "Deploying version ${{ inputs.version }} to canary slice for ${{ inputs.environment-name }}..."
+        echo "Target type: ${{ inputs.deployment-target-type }}"
+        echo "Artifact path: ${{ inputs.artifact-path }}"
+        echo "Canary percentage: ${{ inputs.canary-percentage }}%"
+        
+        # Default deployment_url to the health check URL, can be overridden by specific logic
+        DEPLOYMENT_URL_OUTPUT="${{ inputs.health-check-url-canary }}"
+
+        if [[ "${{ inputs.deployment-target-type }}" == "azure-app-service-slots" ]]; then
+          echo "Using Azure App Service Slot deployment for canary..."
+          # Placeholder for actual Azure CLI commands
+          # Example: az webapp deployment source config-zip --name ${{ inputs.azure-app-name }} ... --slot ${{ inputs.azure-canary-slot-name }} ...
+          # Example: az webapp traffic-routing set ... --distribution ${{ inputs.azure-canary-slot-name }}=${{ inputs.canary-percentage }}
+          echo "::warning::Azure App Service slot deployment logic placeholder."
+          # If the Azure CLI commands can return the specific slot URL, set it here:
+          # ACTUAL_CANARY_URL=$(az webapp show --name "${{ inputs.azure-app-name }}" --slot "${{ inputs.azure-canary-slot-name }}" --query "defaultHostName" -o tsv)
+          # if [ -n "$ACTUAL_CANARY_URL" ]; then DEPLOYMENT_URL_OUTPUT="https://$ACTUAL_CANARY_URL"; fi
+          echo "Simulating deployment for Azure App Service. Actual URL might be different."
+        elif [[ "${{ inputs.deployment-target-type }}" == "kubernetes-ingress" ]]; then
+          echo "::warning::Kubernetes Ingress/Service Mesh canary deployment logic placeholder."
+          # Logic to deploy and configure traffic splitting for Kubernetes
+        else
+          echo "::error::Unsupported canary deployment target type: ${{ inputs.deployment-target-type }}"
+          exit 1
+        fi
+        
+        echo "Canary deployment initiated."
+        echo "deployment_url=$DEPLOYMENT_URL_OUTPUT" >> $GITHUB_OUTPUT
+      env:
+        # Caller workflow should set AZURE_CREDENTIALS_CALLER in its env for this action to inherit
+        # e.g., env: AZURE_CREDENTIALS_CALLER: ${{ secrets.AZURE_CREDENTIALS_MAIN_WORKFLOW }}
+        AZURE_CREDENTIALS_FOR_SCRIPT: ${{ env.AZURE_CREDENTIALS_CALLER }}
+      continue-on-error: false # Step failure means deployment failure

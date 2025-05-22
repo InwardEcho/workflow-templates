@@ -1,0 +1,127 @@
+# Composite Action for Entity Framework Core Database Migration
+# Filename: .github/actions/composite-efcore-migration/action.yml
+# Purpose: Manages EF Core database schema migrations.
+
+name: 'Composite EF Core Database Migration'
+description: 'A composite action to apply Entity Framework Core database migrations.'
+
+inputs:
+  efcore-project-path:
+    description: 'Path to the .csproj file containing EF Core DbContext and migrations.'
+    required: true
+  environment:
+    description: 'Target environment name (e.g., dev, test, prod).'
+    required: true
+  backup-required:
+    description: 'Whether a database backup should be attempted before migration.'
+    required: false
+    default: 'false' # String for composite action
+  backup-script-path:
+    description: 'Path to a custom database backup script.'
+    required: false
+    default: ''
+  migration-timeout:
+    description: 'Timeout for the `dotnet ef database update` command (e.g., 5m, 10m).'
+    required: false
+    default: '5m'
+  dotnet-version:
+    description: '.NET SDK version to use for EF Core tools.'
+    required: false
+    default: '7.0.x'
+  # DB_CONNECTION_STRING is a secret, handled via env context
+
+outputs:
+  status:
+    description: "Status of the database migration process ('success' or 'failure')."
+    value: ${{ steps.set_final_status.outputs.status }}
+  backup_status:
+    description: "Status of the backup step ('success', 'failure', or 'skipped')."
+    value: ${{ steps.backup_database.outcome || 'skipped' }} # Outcome can be success, failure, skipped
+  migration_apply_status:
+    description: "Status of applying migrations ('success', 'failure', or 'skipped')."
+    value: ${{ steps.apply_migrations.outcome || 'skipped' }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup .NET SDK
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ inputs.dotnet-version }}
+
+    - name: Install EF Core Tools
+      shell: bash
+      run: |
+        DOTNET_MAJOR_MINOR=$(echo "${{ inputs.dotnet-version }}" | cut -d'.' -f1,2)
+        echo "Installing EF Core tools for .NET $DOTNET_MAJOR_MINOR"
+        # Installs the latest patch version of EF tools compatible with the major.minor SDK version
+        dotnet tool install --global dotnet-ef --version $DOTNET_MAJOR_MINOR.*
+        # Ensure EF tools are on the PATH (usually handled by setup-dotnet or tool installer)
+        echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
+
+    - name: Backup Database (Optional)
+      id: backup_database
+      if: inputs.backup-required == 'true'
+      shell: bash
+      run: |
+        echo "Attempting database backup for environment: ${{ inputs.environment }}"
+        if [[ -n "${{ inputs.backup-script-path }}" && -f "${{ inputs.backup-script-path }}" ]]; then
+          echo "Running custom backup script: ${{ inputs.backup-script-path }}"
+          # Ensure the script is executable
+          chmod +x "${{ inputs.backup-script-path }}"
+          # Execute the script. It should handle its own success/failure reporting.
+          # Example: ./${{ inputs.backup-script-path }}
+          echo "::warning::Custom backup script ('${{ inputs.backup-script-path }}') execution logic placeholder."
+          # For testing, assume success if script exists, otherwise fail
+          # if ./"${{ inputs.backup-script-path }}"; then echo "Custom backup script succeeded."; else echo "::error::Custom backup script failed."; exit 1; fi
+        else
+          echo "::warning::No custom backup script provided or found at '${{ inputs.backup-script-path }}'. Placeholder for generic backup."
+          echo "Generic backup logic would go here. Simulating successful backup for now."
+        fi
+      env:
+        # The script should use this environment variable
+        DB_CONNECTION_STRING_FOR_BACKUP: ${{ env.DB_CONNECTION_STRING_CALLER }}
+      continue-on-error: false # Backup failure should stop the process if backup is required
+
+    - name: Apply EF Core Migrations
+      id: apply_migrations
+      # Condition: Run if backup is not required OR if backup was required and succeeded.
+      if: (inputs.backup-required == 'false') || (inputs.backup-required == 'true' && steps.backup_database.outcome == 'success')
+      shell: bash
+      run: |
+        echo "Applying EF Core migrations to ${{ inputs.environment }} database..."
+        echo "Project path: ${{ inputs.efcore-project-path }}"
+        # Using timeout command to limit execution time
+        timeout ${{ inputs.migration-timeout }} dotnet ef database update --project "${{ inputs.efcore-project-path }}" --verbose
+      env:
+        # EF Core CLI typically picks up connection strings from appsettings.json or environment variables.
+        # This sets an environment variable that ASP.NET Core configuration system can use.
+        # Adjust the key 'DefaultConnection' if your app uses a different one.
+        ConnectionStrings__DefaultConnection: ${{ env.DB_CONNECTION_STRING_CALLER }}
+      continue-on-error: false # Migration failure should stop the process
+
+    - name: Set Final Status
+      id: set_final_status
+      shell: bash
+      run: |
+        FINAL_STATUS="success"
+        # Check backup step outcome if it was supposed to run
+        if [[ "${{ inputs.backup-required }}" == "true" && "${{ steps.backup_database.outcome }}" == "failure" ]]; then
+          FINAL_STATUS="failure"
+          echo "::error::Database backup step failed."
+        # Check migration step outcome
+        elif [[ "${{ steps.apply_migrations.outcome }}" == "failure" ]]; then
+          FINAL_STATUS="failure"
+          echo "::error::Applying EF Core migrations failed."
+        # Check if migrations were skipped because a required backup didn't succeed
+        elif [[ "${{ steps.apply_migrations.outcome }}" == "skipped" && \
+                "${{ inputs.backup-required }}" == "true" && \
+                "${{ steps.backup_database.outcome }}" != "success" ]]; then
+          FINAL_STATUS="failure"
+          echo "::error::Migrations skipped due to the backup step not succeeding (Backup outcome: ${{ steps.backup_database.outcome }})."
+        fi
+        echo "status=$FINAL_STATUS" >> $GITHUB_OUTPUT
+      if: always() # This step must always run to set the output

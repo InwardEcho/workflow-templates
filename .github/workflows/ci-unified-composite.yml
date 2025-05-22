@@ -1,0 +1,209 @@
+# Unified Continuous Integration Workflow (Using Composite Actions as Steps)
+# Filename: .github/workflows/ci-unified-composite.yml
+# Purpose: Handles CI for various branches, including versioning, build, test, package,
+#          and triggering CD for DEV environment, with composite actions used as steps within consolidated jobs.
+
+name: Unified CI (Composite Actions as Steps)
+
+on:
+  workflow_call:
+    inputs:
+      logLevel:
+        description: 'Log level for the CI process'
+        required: false
+        type: string
+        default: 'warning'
+      enable_cd:
+        description: 'Whether to enable continious delivery'
+        required: false
+        type: boolean
+        default: false
+      cd_workflow:
+        description: 'Path to cd workflow'
+        required: false # required when enabled_cd is true
+        type: string
+    secrets:
+      NUGET_FEED_AUTH_TOKEN_CI:
+        description: 'Optional NuGet feed authentication token for restoring packages during CI.'
+        required: false
+      WORKFLOW_DISPATCH_PAT:
+        description: 'PAT with workflow write scope, required to trigger the DEV deployment workflow.'
+        required: true
+      SLACK_WEBHOOK_URL_CI:
+        description: 'Slack Webhook URL for CI notifications.'
+        required: false
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  setup_and_version:
+    name: Initialize CI, Determine Variables & Calculate Version
+    runs-on: ubuntu-latest
+    outputs:
+      is_main_branch: ${{ steps.determine_branch.outputs.is_main }}
+      versioning_strategy: ${{ steps.determine_branch.outputs.version_strategy }}
+      version_prerelease_suffix: ${{ steps.determine_branch.outputs.prerelease_suffix }}
+      nuget_publish_feed_type: ${{ steps.determine_branch.outputs.nuget_feed_type }}
+      build_artifact_prefix: ${{ steps.determine_branch.outputs.artifact_prefix }}
+      calculated_version: ${{ steps.versioning_step.outputs.calculated-version }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine Branch Type and CI Variables
+        id: determine_branch
+        shell: bash
+        run: |
+          IS_MAIN="false"
+          VERSION_STRATEGY="gitversion"
+          PRERELEASE_SUFFIX=""
+          NUGET_FEED_TYPE="prerelease" 
+          ARTIFACT_PREFIX="feature"
+          REF_NAME="${{ github.ref_name }}"
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            IS_MAIN="true"
+            NUGET_FEED_TYPE="release"
+            ARTIFACT_PREFIX="release"
+          elif [[ "$REF_NAME" == hotfix/* ]]; then
+            ARTIFACT_PREFIX="hotfix"
+          fi
+          echo "is_main=$IS_MAIN" >> $GITHUB_OUTPUT
+          echo "version_strategy=$VERSION_STRATEGY" >> $GITHUB_OUTPUT
+          echo "prerelease_suffix=$PRERELEASE_SUFFIX" >> $GITHUB_OUTPUT
+          echo "nuget_feed_type=$NUGET_FEED_TYPE" >> $GITHUB_OUTPUT
+          echo "artifact_prefix=$ARTIFACT_PREFIX" >> $GITHUB_OUTPUT
+
+      - name: Calculate Version
+        id: versioning_step
+        uses: ./.github/actions/composite-versioning
+        with:
+          strategy: ${{ steps.determine_branch.outputs.version_strategy }}
+          prerelease-suffix-override: ${{ steps.determine_branch.outputs.prerelease_suffix }}
+          fetch-depth: 0
+
+  build_package_publish:
+    name: Build, Test, Package & Publish Application
+    runs-on: ubuntu-latest
+    needs: [setup_and_version]
+    outputs:
+      build_status: ${{ steps.build_test_step.outputs.status }}
+      build_artifact_name: ${{ steps.build_test_step.outputs.build-artifact-name }}
+      publish_status: ${{ steps.publish_nuget_step.outputs.status }}
+      published_count: ${{ steps.publish_nuget_step.outputs.published-count }}
+
+    steps:
+      - name: Build, Test & Package Application
+        id: build_test_step
+        uses: ./.github/actions/composite-dotnet-build-test
+        with:
+          solution-path: '**/*.sln'
+          build-configuration: 'Release'
+          dotnet-version-to-use: '9.0.x'
+          run-tests: true
+          package-application: true
+          publish-output-directory: './app-publish'
+          artifact-name-prefix: ${{ needs.setup_and_version.outputs.build_artifact_prefix }}-${{ needs.setup_and_version.outputs.calculated_version }}
+          upload-build-artifacts: true
+          upload-test-results-artifact: true
+          NUGET_FEED_AUTH_TOKEN: ${{ secrets.NUGET_FEED_AUTH_TOKEN_CI }} # Pass secret as input
+
+      - name: Download Published Application Artifact
+        id: download_artifact_step
+        if: steps.build_test_step.outputs.status == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.build_test_step.outputs.build-artifact-name }}
+          path: ./.nuget_packages
+
+      - name: Publish NuGet Packages
+        id: publish_nuget_step
+        if: steps.build_test_step.outputs.status == 'success' && needs.setup_and_version.outputs.calculated_version != '' && steps.download_artifact_step.outputs.outcome == 'success'
+        uses: ./.github/actions/composite-publish-nuget
+        with:
+          working-directory: ./.nuget_packages
+          package-path: '*.nupkg'
+          version: ${{ needs.setup_and_version.outputs.calculated_version }}
+          nuget-feed-url: "https://nuget.pkg.github.com/${{ github.repository_owner }}/index.json"
+          is-prerelease: ${{ needs.setup_and_version.outputs.is_main_branch == 'false' }}
+          skip-duplicate: true
+          NUGET_API_KEY: ${{ secrets.GITHUB_TOKEN }} # Pass GITHUB_TOKEN as input
+
+  deploy_report_notify:
+    name: Trigger Deployment, Gather Report & Send Notifications
+    runs-on: ubuntu-latest
+    needs: [setup_and_version, build_package_publish]
+    if: always()
+    outputs:
+      final_ci_status: ${{ steps.calculate_overall_status_step.outputs.ci_status }}
+
+    steps:
+      - name: Dispatch DEV Deployment Workflow
+        id: dispatch_step
+        if: needs.build_package_publish.outputs.build_status == 'success' && inputs.enable_cd && inputs.cd_workflow != ''
+        uses: benc-uk/workflow-dispatch@v1
+        with:
+          workflow: ${{ inputs.cd_workflow }}
+          token: ${{ secrets.WORKFLOW_DISPATCH_PAT }} # Correctly passed as input
+          ref: 'main'
+          inputs: |
+            {
+              "version_to_deploy": "${{ needs.setup_and_version.outputs.calculated_version }}",
+              "source_artifact_name": "${{ needs.build_package_publish.outputs.build_artifact_name }}",
+              "target_environment_type": "dev"
+            }
+
+      - name: Calculate CI Overall Status
+        id: calculate_overall_status_step
+        shell: bash
+        run: |
+          BUILD_STATUS="${{ needs.build_package_publish.outputs.build_status }}"
+          PUBLISH_STATUS="${{ needs.build_package_publish.outputs.publish_status }}"
+          IS_PUBLISH_OK="false"
+          if [[ "$PUBLISH_STATUS" == "success" || "$PUBLISH_STATUS" == "skipped" || -z "$PUBLISH_STATUS" ]]; then
+            IS_PUBLISH_OK="true"
+          fi
+
+          DEPLOY_OUTCOME="${{ steps.dispatch_step.outcome }}"
+          IS_DEPLOY_OK="false"
+          if [[ "$DEPLOY_OUTCOME" == "success" || "$DEPLOY_OUTCOME" == "skipped" || -z "$DEPLOY_OUTCOME" ]]; then
+            IS_DEPLOY_OK="true"
+          fi
+          
+          FINAL_CI_STATUS="failure"
+          if [[ "$BUILD_STATUS" == "success" && "$IS_PUBLISH_OK" == "true" && "$IS_DEPLOY_OK" == "true" ]]; then
+            FINAL_CI_STATUS="success"
+          fi
+          echo "ci_status=$FINAL_CI_STATUS" >> $GITHUB_OUTPUT
+        env:
+            BUILD_STATUS: ${{ needs.build_package_publish.outputs.build_status }}
+            PUBLISH_STATUS: ${{ needs.build_package_publish.outputs.publish_status }}
+
+      - name: Send CI Notifications
+        id: notify_step
+        uses: ./.github/actions/composite-observability-hooks
+        with:
+          status: ${{ steps.calculate_overall_status_step.outputs.ci_status }}
+          workflow-name: "${{ github.workflow }} on ${{ github.ref_name }}"
+          branch-name: ${{ github.ref_name }}
+          commit-sha: ${{ github.sha }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          message-details: |
+            Version: `${{ needs.setup_and_version.outputs.calculated_version }}`
+            Build & Test: `${{ needs.build_package_publish.outputs.build_status }}`
+            NuGet Publish: `${{ needs.build_package_publish.outputs.publish_status || 'N/A' }}` (Published: `${{ needs.build_package_publish.outputs.published_count || 0 }}`)
+            DEV Dispatch Trigger: `${{ steps.dispatch_step.outcome || 'N/A' }}`
+          notification-channel: 'slack'
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL_CI }} # Pass secret as input

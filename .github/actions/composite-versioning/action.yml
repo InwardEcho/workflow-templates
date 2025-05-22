@@ -1,0 +1,226 @@
+# Composite Action for Versioning
+# Filename: .github/actions/composite-versioning/action.yml
+# Purpose: Calculates application versions, primarily using GitVersion.
+
+name: 'Composite Versioning'
+description: 'A composite action to calculate application versions.'
+
+inputs:
+  strategy:
+    description: "Versioning strategy ('gitversion', 'tag_based', 'run_number_semantic')."
+    required: false
+    default: 'gitversion'
+  prerelease-suffix-override:
+    description: 'Specific suffix for pre-releases (behavior depends on strategy).'
+    required: false
+    default: ''
+  gitversion-config-file:
+    description: 'Path to GitVersion.yml configuration file.'
+    required: false
+    default: 'GitVersion.yml'
+  fetch-depth:
+    description: 'Fetch depth for checkout (0 for full history for GitVersion).'
+    required: false
+    default: '0' # String, but actions/checkout@v4 handles string '0' correctly
+  default-version:
+    description: 'Default version if other strategies fail or for initial seeding.'
+    required: false
+    default: '0.1.0-alpha'
+
+outputs:
+  calculated-version:
+    description: 'The full calculated version string.'
+    value: ${{ steps.gitversion_execute.outputs.fullSemVer || steps.tag_based_version.outputs.fullSemVer || steps.run_number_version.outputs.fullSemVer || steps.set_default_version.outputs.full_version_output }}
+  major:
+    description: 'Major version part.'
+    value: ${{ steps.gitversion_execute.outputs.major || steps.tag_based_version.outputs.major || steps.run_number_version.outputs.major || steps.set_default_version.outputs.major_output }}
+  minor:
+    description: 'Minor version part.'
+    value: ${{ steps.gitversion_execute.outputs.minor || steps.tag_based_version.outputs.minor || steps.run_number_version.outputs.minor || steps.set_default_version.outputs.minor_output }}
+  patch:
+    description: 'Patch version part.'
+    value: ${{ steps.gitversion_execute.outputs.patch || steps.tag_based_version.outputs.patch || steps.run_number_version.outputs.patch || steps.set_default_version.outputs.patch_output }}
+  prerelease-tag:
+    description: 'Pre-release tag.'
+    value: ${{ steps.gitversion_execute.outputs.preReleaseTag || steps.tag_based_version.outputs.preReleaseTag || steps.run_number_version.outputs.preReleaseTag || steps.set_default_version.outputs.prerelease_tag_output }}
+  build-metadata:
+    description: 'Build metadata part of the version.'
+    value: ${{ steps.gitversion_execute.outputs.buildMetaData || steps.tag_based_version.outputs.buildMetaData || steps.run_number_version.outputs.buildMetaData || steps.set_default_version.outputs.build_metadata_output }}
+  is-prerelease:
+    description: 'Boolean indicating if the version is a pre-release.'
+    value: ${{ steps.determine_prerelease_flag.outputs.is_prerelease }}
+  semver:
+    description: 'The semantic version (Major.Minor.Patch).'
+    value: ${{ steps.gitversion_execute.outputs.majorMinorPatch || steps.tag_based_version.outputs.majorMinorPatch || steps.run_number_version.outputs.majorMinorPatch || steps.set_default_version.outputs.semver_output }}
+  assembly-semver:
+    description: 'Assembly Semantic Version.'
+    value: ${{ steps.gitversion_execute.outputs.assemblySemVer || steps.tag_based_version.outputs.assemblySemVer || steps.run_number_version.outputs.assemblySemVer || steps.set_default_version.outputs.assembly_semver_output }}
+  informational-version:
+    description: 'Full informational version.'
+    value: ${{ steps.gitversion_execute.outputs.informationalVersion || steps.tag_based_version.outputs.informationalVersion || steps.run_number_version.outputs.informationalVersion || steps.set_default_version.outputs.informational_version_output }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: ${{ inputs.fetch-depth }}
+
+    - name: Install GitVersion
+      if: inputs.strategy == 'gitversion'
+      uses: gittools/actions/gitversion/setup@v1.1.1
+      with:
+        versionSpec: '5.x'
+
+    - name: Check if GitVersion config file exists
+      if: inputs.strategy == 'gitversion'
+      id: check_gitversion_config
+      shell: bash
+      run: |
+        if [[ -f "${{ inputs.gitversion-config-file }}" ]]; then
+          echo "exists=true" >> $GITHUB_OUTPUT
+          echo "::info::GitVersion configuration file found at ${{ inputs.gitversion-config-file }}."
+        else
+          echo "exists=false" >> $GITHUB_OUTPUT
+          echo "::warning::GitVersion configuration file not found at ${{ inputs.gitversion-config-file }}. GitVersion will use default settings."
+        fi
+
+    - name: Execute GitVersion
+      if: inputs.strategy == 'gitversion'
+      id: gitversion_execute
+      uses: gittools/actions/gitversion/execute@v1.1.1
+      with:
+        useConfigFile: ${{ steps.check_gitversion_config.outputs.exists == 'true' }}
+        configFilePath: ${{ steps.check_gitversion_config.outputs.exists == 'true' && inputs.gitversion-config-file || '' }}
+        # Add logic for prerelease-suffix-override if GitVersion action supports direct override
+        # otherwise, it might need to be handled by modifying GitVersion.yml or post-processing.
+        # For now, not directly applying prerelease-suffix-override to GitVersion execution itself.
+
+    # Placeholder for 'tag_based' strategy
+    - name: Calculate version from tags (Placeholder)
+      if: inputs.strategy == 'tag_based'
+      id: tag_based_version
+      shell: bash
+      run: |
+        echo "::warning::'tag_based' versioning strategy is a placeholder."
+        # This step should output all the version variables like GitVersion does if it's to be a true alternative
+        # For now, it only sets fullSemVer. Other outputs will be blank if this strategy is chosen and succeeds.
+        # A real implementation would parse git describe or similar.
+        echo "fullSemVer=${{ inputs.default-version }}" >> $GITHUB_OUTPUT 
+        echo "major=" >> $GITHUB_OUTPUT # Placeholder
+        echo "minor=" >> $GITHUB_OUTPUT # Placeholder
+        echo "patch=" >> $GITHUB_OUTPUT # Placeholder
+        echo "preReleaseTag=" >> $GITHUB_OUTPUT # Placeholder
+        echo "buildMetaData=" >> $GITHUB_OUTPUT # Placeholder
+        echo "majorMinorPatch=" >> $GITHUB_OUTPUT # Placeholder
+        echo "assemblySemVer=" >> $GITHUB_OUTPUT # Placeholder
+        echo "informationalVersion=${{ inputs.default-version }}" >> $GITHUB_OUTPUT # Placeholder
+
+    # Placeholder for 'run_number_semantic' strategy
+    - name: Calculate version from run number (Placeholder)
+      if: inputs.strategy == 'run_number_semantic'
+      id: run_number_version
+      shell: bash
+      run: |
+        echo "::warning::'run_number_semantic' versioning strategy is a placeholder."
+        BASE_VERSION=$(echo "${{ inputs.default-version }}" | cut -d'-' -f1)
+        VERSION="$BASE_VERSION.${{ github.run_number }}"
+        PR_TAG=""
+        if [[ "${{ inputs.prerelease-suffix-override }}" != "" ]]; then
+          VERSION="$VERSION-${{ inputs.prerelease-suffix-override }}"
+          PR_TAG="${{ inputs.prerelease-suffix-override }}"
+        fi
+        echo "fullSemVer=$VERSION" >> $GITHUB_OUTPUT
+        # This step should also output all version variables.
+        echo "major=$(echo $BASE_VERSION | cut -d'.' -f1)" >> $GITHUB_OUTPUT # Placeholder
+        echo "minor=$(echo $BASE_VERSION | cut -d'.' -f2)" >> $GITHUB_OUTPUT # Placeholder
+        echo "patch=${{ github.run_number }}" >> $GITHUB_OUTPUT # Placeholder
+        echo "preReleaseTag=$PR_TAG" >> $GITHUB_OUTPUT # Placeholder
+        echo "buildMetaData=" >> $GITHUB_OUTPUT # Placeholder
+        echo "majorMinorPatch=$BASE_VERSION.${{ github.run_number }}" >> $GITHUB_OUTPUT # Placeholder
+        echo "assemblySemVer=$BASE_VERSION.${{ github.run_number }}.0" >> $GITHUB_OUTPUT # Placeholder
+        echo "informationalVersion=$VERSION" >> $GITHUB_OUTPUT # Placeholder
+
+    - name: Set Default Version if strategy failed or not GitVersion
+      id: set_default_version
+      # Run if GitVersion was the strategy but produced no output, OR if another strategy was chosen but didn't output fullSemVer.
+      if: (inputs.strategy == 'gitversion' && steps.gitversion_execute.outputs.fullSemVer == '') || \
+          (inputs.strategy == 'tag_based' && steps.tag_based_version.outputs.fullSemVer == '') || \
+          (inputs.strategy == 'run_number_semantic' && steps.run_number_version.outputs.fullSemVer == '')
+      shell: bash
+      run: |
+        VERSION="${{ inputs.default-version }}"
+        # Basic parsing for default version. A more robust parser might be needed for complex default versions.
+        MAJOR=$(echo $VERSION | sed -E 's/^([0-9]+)\.([0-9]+)\.([0-9]+).*$/\1/')
+        MINOR=$(echo $VERSION | sed -E 's/^([0-9]+)\.([0-9]+)\.([0-9]+).*$/\2/')
+        PATCH_FULL=$(echo $VERSION | sed -E 's/^([0-9]+)\.([0-9]+)\.([0-9]+)(.*)$/\3\4/') # e.g., 0-alpha or 0
+        PATCH=$(echo $PATCH_FULL | cut -d'-' -f1)
+        PRERELEASE_TAG=""
+        if [[ "$PATCH_FULL" == *"-"* ]]; then
+          PRERELEASE_TAG=$(echo $PATCH_FULL | sed -E 's/^[0-9]+-(.*)$/\1/')
+        fi
+        
+        echo "Setting default version parts from: $VERSION"
+        echo "full_version_output=$VERSION" >> $GITHUB_OUTPUT
+        echo "major_output=$MAJOR" >> $GITHUB_OUTPUT
+        echo "minor_output=$MINOR" >> $GITHUB_OUTPUT
+        echo "patch_output=$PATCH" >> $GITHUB_OUTPUT
+        echo "prerelease_tag_output=$PRERELEASE_TAG" >> $GITHUB_OUTPUT
+        echo "build_metadata_output=" >> $GITHUB_OUTPUT # GitVersion provides this, default is empty
+        echo "semver_output=$MAJOR.$MINOR.$PATCH" >> $GITHUB_OUTPUT
+        echo "assembly_semver_output=$MAJOR.$MINOR.$PATCH.0" >> $GITHUB_OUTPUT # Default assembly version
+        echo "informational_version_output=$VERSION" >> $GITHUB_OUTPUT
+
+    - name: Determine IsPreRelease Flag
+      id: determine_prerelease_flag
+      shell: bash
+      run: |
+        IS_PRERELEASE="false"
+        PR_TAG_SOURCE=""
+
+        # Determine which step's output to use based on strategy and success
+        if [[ "${{ inputs.strategy }}" == "gitversion" && "${{ steps.gitversion_execute.outputs.fullSemVer }}" != "" ]]; then
+          PR_TAG_SOURCE="${{ steps.gitversion_execute.outputs.preReleaseTag }}"
+        elif [[ "${{ inputs.strategy }}" == "tag_based" && "${{ steps.tag_based_version.outputs.fullSemVer }}" != "" ]]; then
+          PR_TAG_SOURCE="${{ steps.tag_based_version.outputs.preReleaseTag }}" 
+        elif [[ "${{ inputs.strategy }}" == "run_number_semantic" && "${{ steps.run_number_version.outputs.fullSemVer }}" != "" ]]; then
+          PR_TAG_SOURCE="${{ steps.run_number_version.outputs.preReleaseTag }}"
+        else
+          # This 'else' means the chosen strategy failed or was not one of the above, so set_default_version ran (or should have).
+          PR_TAG_SOURCE="${{ steps.set_default_version.outputs.prerelease_tag_output }}"
+        fi
+
+        if [[ "$PR_TAG_SOURCE" != "" && "$PR_TAG_SOURCE" != "null" ]]; then # GitVersion can output "null" string
+          IS_PRERELEASE="true"
+        fi
+        echo "is_prerelease=$IS_PRERELEASE" >> $GITHUB_OUTPUT
+      if: always()
+
+    - name: Echo Final Version Details
+      shell: bash
+      run: |
+        # Consolidate the source of truth for version parts
+        FINAL_FULL_SEM_VER="${{ steps.gitversion_execute.outputs.fullSemVer || steps.tag_based_version.outputs.fullSemVer || steps.run_number_version.outputs.fullSemVer || steps.set_default_version.outputs.full_version_output }}"
+        FINAL_MAJOR="${{ steps.gitversion_execute.outputs.major || steps.tag_based_version.outputs.major || steps.run_number_version.outputs.major || steps.set_default_version.outputs.major_output }}"
+        FINAL_MINOR="${{ steps.gitversion_execute.outputs.minor || steps.tag_based_version.outputs.minor || steps.run_number_version.outputs.minor || steps.set_default_version.outputs.minor_output }}"
+        FINAL_PATCH="${{ steps.gitversion_execute.outputs.patch || steps.tag_based_version.outputs.patch || steps.run_number_version.outputs.patch || steps.set_default_version.outputs.patch_output }}"
+        FINAL_PR_TAG="${{ steps.gitversion_execute.outputs.preReleaseTag || steps.tag_based_version.outputs.preReleaseTag || steps.run_number_version.outputs.preReleaseTag || steps.set_default_version.outputs.prerelease_tag_output }}"
+        FINAL_SEMVER_CORE="${{ steps.gitversion_execute.outputs.majorMinorPatch || steps.tag_based_version.outputs.majorMinorPatch || steps.run_number_version.outputs.majorMinorPatch || steps.set_default_version.outputs.semver_output }}"
+        FINAL_ASSEMBLY_SEMVER="${{ steps.gitversion_execute.outputs.assemblySemVer || steps.tag_based_version.outputs.assemblySemVer || steps.run_number_version.outputs.assemblySemVer || steps.set_default_version.outputs.assembly_semver_output }}"
+        FINAL_INFO_VERSION="${{ steps.gitversion_execute.outputs.informationalVersion || steps.tag_based_version.outputs.informationalVersion || steps.run_number_version.outputs.informationalVersion || steps.set_default_version.outputs.informational_version_output }}"
+
+        CALCULATED_DISPLAY_VERSION="$FINAL_SEMVER_CORE"
+        if [[ "${{ steps.determine_prerelease_flag.outputs.is_prerelease }}" == "true" ]]; then
+          CALCULATED_DISPLAY_VERSION="$FINAL_FULL_SEM_VER"
+        fi
+
+        echo "Calculated Version: $CALCULATED_DISPLAY_VERSION"
+        echo "Major: $FINAL_MAJOR"
+        echo "Minor: $FINAL_MINOR"
+        echo "Patch: $FINAL_PATCH"
+        echo "PreRelease Tag: $FINAL_PR_TAG"
+        echo "Is PreRelease: ${{ steps.determine_prerelease_flag.outputs.is_prerelease }}"
+        echo "AssemblySemVer: $FINAL_ASSEMBLY_SEMVER"
+        echo "InformationalVersion: $FINAL_INFO_VERSION"
+      if: always() # Always echo what was determined

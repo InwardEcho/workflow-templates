@@ -1,0 +1,63 @@
+# Composite Action for Rolling Back a Canary Deployment
+# Filename: .github/actions/composite-rollback-canary/action.yml
+# Purpose: Rolls back a failed canary deployment.
+
+name: 'Composite Rollback Canary'
+description: 'A composite action to roll back a failed canary deployment.'
+
+inputs:
+  environment-name:
+    description: 'Base environment name (e.g., prod) where canary failed.'
+    required: true
+  version:
+    description: 'Version string of the application that failed canary and is being rolled back.'
+    required: true
+  deployment-target-type:
+    description: "Type of deployment target (e.g., 'azure-app-service-slots', 'kubernetes-ingress', 'custom')."
+    required: true
+  # Azure App Service Specific Inputs (example)
+  azure-app-name:
+    description: 'Name of the Azure App Service.'
+    required: false # Required if target is azure-app-service-slots
+  azure-canary-slot-name:
+    description: 'Name of the Azure App Service slot that served as canary and needs rollback.'
+    required: false # Required if target is azure-app-service-slots
+  # azure-production-slot-name might be needed if rollback involves ensuring production is stable
+  # Secrets are handled via env context from the caller
+
+outputs:
+  status:
+    description: "Status of the rollback operation ('success' or 'failure')."
+    value: ${{ steps.perform_rollback.outcome }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Perform Rollback
+      id: perform_rollback
+      shell: bash
+      run: |
+        echo "::error::Canary version ${{ inputs.version }} for ${{ inputs.environment-name }} failed health checks. Initiating rollback."
+        echo "Target type: ${{ inputs.deployment-target-type }}"
+
+        if [[ "${{ inputs.deployment-target-type }}" == "azure-app-service-slots" ]]; then
+          echo "Rolling back Azure App Service: Routing 0% traffic to canary slot ('${{ inputs.azure-canary-slot-name }}') for App: ${{ inputs.azure-app-name }}."
+          # Placeholder for actual Azure CLI commands
+          # Example: az webapp traffic-routing set --name ${{ inputs.azure-app-name }} ... --distribution ${{ inputs.azure-canary-slot-name }}=0
+          # Optionally, delete or stop the canary slot if it was created dynamically and not a pre-existing staging slot.
+          # Example: az webapp deployment slot delete --name ${{ inputs.azure-app-name }} ... --slot ${{ inputs.azure-canary-slot-name }} (if appropriate)
+          echo "::warning::Azure App Service slot rollback logic placeholder."
+        elif [[ "${{ inputs.deployment-target-type }}" == "kubernetes-ingress" ]]; then
+          echo "::warning::Kubernetes Ingress/Service Mesh rollback logic placeholder."
+          # Logic to revert traffic changes or scale down/delete canary deployment in Kubernetes
+        else
+          echo "::error::Unsupported rollback target type: ${{ inputs.deployment-target-type }}"
+          exit 1 # Fail if rollback cannot be determined
+        fi
+        
+        echo "Rollback procedure initiated/completed for version ${{ inputs.version }}."
+      env:
+        # Assumes AZURE_CREDENTIALS_CALLER (or other necessary secrets)
+        # are set in the environment by the calling workflow.
+        AZURE_CREDENTIALS_FOR_SCRIPT: ${{ env.AZURE_CREDENTIALS_CALLER }}
+      continue-on-error: false # Rollback failure is critical

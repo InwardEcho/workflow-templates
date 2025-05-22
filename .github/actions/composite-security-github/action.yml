@@ -1,0 +1,119 @@
+# Composite Action for GitHub Native Security
+# Filename: .github/actions/composite-security-github/action.yml
+# Purpose: Orchestrates GitHub's native security features like CodeQL.
+
+name: 'Composite GitHub Security Checks'
+description: 'A composite action to run GitHub security features like CodeQL.'
+
+inputs:
+  enable-codeql:
+    description: 'Whether to run CodeQL analysis.'
+    required: false
+    default: 'true' # String for composite action
+  codeql-language:
+    description: "Comma-separated list of languages for CodeQL (e.g., 'csharp', 'javascript')."
+    required: false
+    default: 'csharp'
+  codeql-config-file:
+    description: 'Path to a custom CodeQL configuration file.'
+    required: false
+    default: ''
+  codeql-query-suite:
+    description: 'Path to a custom CodeQL query suite file (.qls) or a predefined suite name.'
+    required: false
+    default: ''
+  codeql-ram:
+    description: 'Amount of RAM for CodeQL analysis (e.g., 2048).'
+    required: false
+    default: ''
+  codeql-threads:
+    description: 'Number of threads for CodeQL analysis (0 for auto).'
+    required: false
+    default: '0'
+  fail-on-codeql-error: # Error during analysis setup/execution
+    description: 'Whether to fail if CodeQL encounters an error during its execution.'
+    required: false
+    default: 'false' # String for composite action
+  fail-on-codeql-severity: # Fail based on findings (placeholder)
+    description: "Minimum severity of CodeQL alert to cause failure (e.g., 'error'). Placeholder functionality."
+    required: false
+    default: ''
+
+outputs:
+  status:
+    description: "Status of the security scan execution ('success' or 'failure')."
+    value: ${{ steps.set_final_status.outputs.status }}
+  codeql-results-url: # This was codeql_sarif_id, which is typically the path to the SARIF file or an ID.
+                      # The actual URL is usually found in the GitHub Security tab.
+    description: 'SARIF ID or path from CodeQL analysis (actual URL is in GitHub Security tab).'
+    value: ${{ steps.codeql_analyze.outputs.sarif-id }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0 # Recommended for CodeQL
+
+    - name: Initialize CodeQL
+      id: codeql_init
+      if: inputs.enable-codeql == 'true'
+      uses: github/codeql-action/init@v3
+      with:
+        languages: ${{ inputs.codeql-language }}
+        config-file: ${{ inputs.codeql-config-file || null }}
+        queries: ${{ inputs.codeql-query-suite || null }}
+        ram: ${{ inputs.codeql-ram || null }}
+        threads: ${{ inputs.codeql-threads || null }}
+      continue-on-error: ${{ inputs.fail-on-codeql-error == 'false' }}
+
+    # Placeholder for build step if needed by CodeQL (e.g., for C#)
+    # - name: Build for CodeQL (if autobuild is insufficient)
+    #   if: inputs.enable-codeql == 'true' && steps.codeql_init.outcome == 'success'
+    #   shell: bash
+    #   run: |
+    #     echo "::warning::If your project (e.g., C#) requires a build for CodeQL, add it here."
+    #     # Example: dotnet build --configuration Release
+    #   continue-on-error: ${{ inputs.fail-on-codeql-error == 'false' }}
+
+    - name: Perform CodeQL Analysis
+      id: codeql_analyze
+      if: inputs.enable-codeql == 'true' && steps.codeql_init.outcome == 'success'
+      uses: github/codeql-action/analyze@v3
+      continue-on-error: ${{ inputs.fail-on-codeql-error == 'false' }}
+
+    - name: Check CodeQL Results for Failure Condition (Placeholder)
+      id: check_codeql_severity
+      if: inputs.enable-codeql == 'true' && inputs.fail-on-codeql-severity != '' && steps.codeql_analyze.outcome == 'success'
+      shell: bash
+      run: |
+        echo "::warning::Failing based on CodeQL finding severity ('${{ inputs.fail-on-codeql-severity }}') within a composite action requires custom SARIF processing."
+        echo "::warning::It is recommended to use branch protection rules for this, or a dedicated SARIF processing action external to this composite action."
+        # This placeholder assumes the check passes, as direct SARIF parsing isn't implemented here.
+        echo "severity_check_passed=true" >> $GITHUB_OUTPUT
+    
+    - name: Set Final Status
+      id: set_final_status
+      shell: bash
+      run: |
+        FINAL_STATUS="success"
+        if [[ "${{ inputs.enable-codeql }}" == "true" ]]; then
+          # Check if init step was supposed to run and failed, and we care about that failure
+          if [[ "${{ steps.codeql_init.outcome }}" == "failure" && "${{ inputs.fail-on-codeql-error }}" == "true" ]]; then
+            FINAL_STATUS="failure"
+            echo "::error::CodeQL initialization failed."
+          # Check if analyze step was supposed to run (init succeeded) and failed, and we care
+          elif [[ "${{ steps.codeql_init.outcome }}" == "success" && "${{ steps.codeql_analyze.outcome }}" == "failure" && "${{ inputs.fail-on-codeql-error }}" == "true" ]]; then
+            FINAL_STATUS="failure"
+            echo "::error::CodeQL analysis failed."
+          # Check severity placeholder (if it were implemented to output 'false')
+          elif [[ "${{ inputs.fail-on-codeql-severity }}" != "" && "${{ steps.check_codeql_severity.outputs.severity_check_passed }}" == "false" ]]; then
+            FINAL_STATUS="failure"
+            echo "::error::CodeQL findings exceeded the severity threshold of '${{ inputs.fail-on-codeql-severity }}' (based on placeholder logic)."
+          # If init or analyze were skipped due to inputs.enable-codeql == 'false', that's not a failure of this action.
+          # If fail-on-codeql-error is 'false', then init/analyze failures don't make FINAL_STATUS failure here.
+          fi
+        fi
+        echo "status=$FINAL_STATUS" >> $GITHUB_OUTPUT
+      if: always()

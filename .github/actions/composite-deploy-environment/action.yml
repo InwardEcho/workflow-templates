@@ -1,0 +1,224 @@
+# Composite Action for Application Deployment
+# Filename: .github/actions/composite-deploy-environment/action.yml
+# Purpose: Deploys an application artifact to a specified environment and target type.
+
+name: 'Composite Deploy Environment'
+description: 'A composite action to deploy an application to a target environment.'
+
+inputs:
+  environment-name:
+    description: 'Name of the target environment.'
+    required: true
+  artifact-path:
+    description: 'Path to the application artifact to deploy.'
+    required: true
+  deployment-target-type:
+    description: "Type of deployment target (e.g., 'azure-app-service', 'kubernetes-manifest', 'custom-script')."
+    required: true
+  version-being-deployed:
+    description: 'Version string of the application being deployed.'
+    required: false
+    default: 'N/A'
+  # Azure App Service specific inputs
+  azure-app-name:
+    description: 'Name of the Azure App Service or slot.'
+    required: false
+  azure-slot-name:
+    description: 'Name of the Azure App Service deployment slot (optional).'
+    required: false
+    default: '' # Empty means deploy to production slot if app-name is main service
+  # Kubernetes specific inputs
+  kubernetes-namespace:
+    description: 'Kubernetes namespace.'
+    required: false
+  kubernetes-manifest-path:
+    description: 'Path to Kubernetes manifest files or kustomization directory.'
+    required: false
+  # Custom script specific inputs
+  custom-script-path:
+    description: 'Path to the custom deployment script.'
+    required: false
+  custom-script-shell:
+    description: 'Shell to use for custom script.'
+    required: false
+    default: 'bash'
+  # Health Check inputs
+  health-check-url:
+    description: 'URL for post-deployment health check.'
+    required: false
+    default: ''
+  health-check-timeout:
+    description: 'Timeout for the health check (e.g., 2m, 5m).'
+    required: false
+    default: '2m'
+  health-check-retries:
+    description: 'Number of times to retry health check (as string for composite).'
+    required: false
+    default: '3'
+  health-check-retry-delay:
+    description: 'Delay between health check retries (e.g., 10s, 30s).'
+    required: false
+    default: '10s'
+  # Secrets are handled via env context
+
+outputs:
+  status:
+    description: "Status of the deployment process ('success' or 'failure')."
+    value: ${{ steps.set_final_status.outputs.status }}
+  deployment_url:
+    description: 'URL of the deployed application.'
+    # Consolidate URL output based on which deployment step ran
+    value: ${{ steps.azure_app_service_deploy.outputs.webapp-url || steps.set_custom_deployment_url.outputs.url || steps.set_k8s_deployment_url.outputs.url || '' }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Checkout repository (if needed for scripts/manifests)
+      uses: actions/checkout@v4
+      # This step is only strictly necessary if custom scripts or k8s manifests are
+      # part of the repository and not included in the artifact.
+      # If artifact-path contains everything, this might be skippable by the caller.
+
+    - name: Deploy to Azure App Service
+      id: azure_app_service_deploy
+      if: inputs.deployment-target-type == 'azure-app-service' && inputs.azure-app-name != ''
+      uses: azure/webapps-deploy@v3
+      with:
+        app-name: ${{ inputs.azure-app-name }}
+        slot-name: ${{ inputs.azure-slot-name || 'production' }}
+        package: ${{ inputs.artifact-path }}
+      env:
+        # azure/webapps-deploy action uses AZURE_CREDENTIALS from env if available
+        AZURE_CREDENTIALS: ${{ env.AZURE_CREDENTIALS_CALLER }} # Caller maps their secret here
+      continue-on-error: false
+
+    - name: Deploy to Kubernetes (Manifests)
+      id: kubernetes_manifest_deploy
+      if: inputs.deployment-target-type == 'kubernetes-manifest' && inputs.kubernetes-manifest-path != ''
+      shell: bash
+      run: |
+        echo "Deploying to Kubernetes namespace: ${{ inputs.kubernetes-namespace }}"
+        echo "Using manifests from: ${{ inputs.kubernetes-manifest-path }}"
+        echo "Artifact to deploy (if applicable): ${{ inputs.artifact-path }}"
+        echo "::warning::Kubernetes deployment logic placeholder. Implement using kubectl apply or specific k8s actions."
+        # Example:
+        # Configure kubectl using KUBE_CONFIG_DATA_CALLER
+        # kubectl apply -n "${{ inputs.kubernetes-namespace }}" -f "${{ inputs.kubernetes-manifest-path }}"
+        # Potentially discover and output a service URL here.
+      env:
+        KUBE_CONFIG_DATA_CALLER: ${{ env.KUBE_CONFIG_DATA_CALLER }} # Caller maps their secret here
+      continue-on-error: false
+
+    - name: Set Kubernetes Deployment URL (Placeholder)
+      id: set_k8s_deployment_url
+      if: steps.kubernetes_manifest_deploy.outcome == 'success'
+      shell: bash
+      run: |
+        echo "::warning::K8s deployment URL discovery placeholder."
+        echo "url=" >> $GITHUB_OUTPUT # Set to actual URL if discoverable
+
+    - name: Execute Custom Deployment Script
+      id: custom_script_deploy
+      if: inputs.deployment-target-type == 'custom-script' && inputs.custom-script-path != ''
+      shell: bash # This outer shell runs the command, the inner shell is specified by input
+      run: |
+        echo "Executing custom deployment script: ${{ inputs.custom-script-path }} using shell ${{ inputs.custom-script-shell }}"
+        echo "Artifact available at: ${{ inputs.artifact-path }}"
+        # Ensure script is executable if it's a shell script
+        if [[ "${{ inputs.custom-script-shell }}" == "bash" || "${{ inputs.custom-script-shell }}" == "sh" ]]; then
+          chmod +x "${{ inputs.custom-script-path }}"
+        fi
+        # Pass inputs as environment variables to the script
+        VERSION_BEING_DEPLOYED="${{ inputs.version-being-deployed }}" \
+        ARTIFACT_PATH_FOR_SCRIPT="${{ inputs.artifact-path }}" \
+        TARGET_ENVIRONMENT="${{ inputs.environment-name }}" \
+        ${{ inputs.custom-script-shell }} ${{ inputs.custom-script-path }}
+      env:
+        # Caller maps their secret, e.g., CUSTOM_SCRIPT_SECRET_CALLER: ${{ secrets.SOME_API_KEY }}
+        CUSTOM_SECRET_FOR_SCRIPT: ${{ env.CUSTOM_SCRIPT_SECRET_CALLER }}
+      continue-on-error: false
+
+    - name: Set Custom Deployment URL (Placeholder)
+      id: set_custom_deployment_url
+      if: steps.custom_script_deploy.outcome == 'success'
+      shell: bash
+      run: |
+        echo "::warning::Custom script deployment URL discovery placeholder. Script should output to a known file if URL is generated."
+        # Example: if your custom script writes the URL to a file named 'deployment_url.txt':
+        # if [ -f deployment_url.txt ]; then echo "url=$(cat deployment_url.txt)" >> $GITHUB_OUTPUT; else echo "url=" >> $GITHUB_OUTPUT; fi
+        echo "url=" >> $GITHUB_OUTPUT
+
+    - name: Post-Deployment Health Check
+      id: health_check
+      # Run if a health check URL is provided AND one of the deployment steps was attempted and succeeded
+      if: >
+        inputs.health-check-url != '' &&
+        (
+          (inputs.deployment-target-type == 'azure-app-service' && steps.azure_app_service_deploy.outcome == 'success') ||
+          (inputs.deployment-target-type == 'kubernetes-manifest' && steps.kubernetes_manifest_deploy.outcome == 'success') ||
+          (inputs.deployment-target-type == 'custom-script' && steps.custom_script_deploy.outcome == 'success')
+        )
+      shell: bash
+      run: |
+        echo "Performing health check on: ${{ inputs.health-check-url }}"
+        RETRY_COUNT=0
+        MAX_RETRIES=${{ inputs.health-check-retries }} # Already a string, bash handles it
+        RETRY_DELAY="${{ inputs.health-check-retry-delay }}"
+        
+        # Convert timeout like '2m' to seconds for sleep or pass to curl's --max-time if appropriate
+        # This basic example uses a simple loop with sleep.
+        # A more robust curl might use --connect-timeout and --max-time.
+        
+        until curl --output /dev/null --silent --head --fail --max-time 10 "${{ inputs.health-check-url }}"; do
+          RETRY_COUNT=$((RETRY_COUNT + 1))
+          if [[ $RETRY_COUNT -gt $MAX_RETRIES ]]; then
+            echo "::error::Health check failed after $MAX_RETRIES retries for ${{ inputs.health-check-url }}."
+            exit 1
+          fi
+          echo "Health check attempt $RETRY_COUNT failed for ${{ inputs.health-check-url }}. Retrying in $RETRY_DELAY..."
+          sleep "$RETRY_DELAY"
+        done
+        echo "Health check successful for ${{ inputs.health-check-url }}"
+      continue-on-error: false # Health check failure means overall failure
+
+    - name: Set Final Status
+      id: set_final_status
+      shell: bash
+      run: |
+        FINAL_STATUS="failure" # Default
+        DEPLOY_STEP_OUTCOME="skipped" # Default if no deploy type matches or runs
+
+        if [[ "${{ inputs.deployment-target-type }}" == "azure-app-service" ]]; then
+          DEPLOY_STEP_OUTCOME="${{ steps.azure_app_service_deploy.outcome }}"
+        elif [[ "${{ inputs.deployment-target-type }}" == "kubernetes-manifest" ]]; then
+          DEPLOY_STEP_OUTCOME="${{ steps.kubernetes_manifest_deploy.outcome }}"
+        elif [[ "${{ inputs.deployment-target-type }}" == "custom-script" ]]; then
+          DEPLOY_STEP_OUTCOME="${{ steps.custom_script_deploy.outcome }}"
+        else
+          echo "::error::Unknown or unattempted deployment target type: ${{ inputs.deployment-target-type }}"
+          DEPLOY_STEP_OUTCOME="failure" 
+        fi
+
+        HEALTH_CHECK_OUTCOME="${{ steps.health_check.outcome || 'skipped' }}"
+
+        if [[ "$DEPLOY_STEP_OUTCOME" == "success" ]]; then
+          if [[ "${{ inputs.health-check-url }}" == "" || "$HEALTH_CHECK_OUTCOME" == "success" || "$HEALTH_CHECK_OUTCOME" == "skipped" && "${{ inputs.health-check-url }}" == "" ]]; then
+            # Success if deploy succeeded AND (no health check URL OR health check succeeded OR health check skipped because no URL)
+            FINAL_STATUS="success"
+          else
+            echo "::error::Deployment step succeeded but health check ($HEALTH_CHECK_OUTCOME) failed for URL '${{ inputs.health-check-url }}'."
+            FINAL_STATUS="failure"
+          fi
+        else
+          # DEPLOY_STEP_OUTCOME is 'failure' or 'skipped' (if 'if' condition false)
+          if [[ "$DEPLOY_STEP_OUTCOME" != "skipped" ]]; then # Only error if it actually ran and failed
+             echo "::error::Deployment step itself failed (Outcome: $DEPLOY_STEP_OUTCOME) for target type '${{ inputs.deployment-target-type }}'."
+          elif [[ "${{ inputs.deployment-target-type }}" != "azure-app-service" && "${{ inputs.deployment-target-type }}" != "kubernetes-manifest" && "${{ inputs.deployment-target-type }}" != "custom-script" ]]; then
+             echo "::error::Deployment skipped due to invalid target type: ${{ inputs.deployment-target-type }}"
+          else
+             echo "Deployment step was skipped (e.g. 'if' condition unmet for deploy step), this might be intended or an issue with inputs."
+          fi
+          FINAL_STATUS="failure" # Treat skipped deploy (if not due to unknown type) or failed deploy as overall failure
+        fi
+        echo "status=$FINAL_STATUS" >> $GITHUB_OUTPUT
+      if: always()

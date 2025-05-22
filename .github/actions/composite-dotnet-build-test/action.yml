@@ -1,0 +1,289 @@
+# Composite Action for .NET Build, Test, and Package
+# Filename: .github/actions/composite-dotnet-build-test/action.yml
+# Purpose: Compiles, tests, and optionally packages .NET applications.
+
+name: 'Composite .NET Build, Test &amp; Package'
+description: 'A composite action to build, test, and package .NET applications.'
+
+inputs:
+  solution-path:
+    description: 'Path to the .sln file or .csproj file.'
+    required: false
+    default: '**/*.sln'
+  build-configuration:
+    description: 'Build configuration (e.g., Debug, Release).'
+    required: false
+    default: 'Release'
+  dotnet-version-to-use:
+    description: 'Specific .NET SDK version to use for the build.'
+    required: false
+    default: ''
+  run-tests:
+    description: 'Whether to run tests.'
+    required: false
+    default: 'true' # String true for composite actions
+  test-project-path:
+    description: 'Path to test projects. Defaults to solution-path.'
+    required: false
+    default: ''
+  test-filter:
+    description: 'Filter for dotnet test.'
+    required: false
+    default: ''
+  test-results-format:
+    description: 'Format for test results (e.g., trx, junit).'
+    required: false
+    default: 'trx'
+  test-results-directory:
+    description: 'Directory to output test results.'
+    required: false
+    default: 'TestResults'
+  package-application:
+    description: 'Whether to package the application (dotnet publish).'
+    required: false
+    default: 'false' # String false
+  publish-output-directory:
+    description: 'Output directory for dotnet publish.'
+    required: false
+    default: './publish'
+  artifact-name-prefix:
+    description: 'Prefix for uploaded artifacts.'
+    required: true
+  upload-build-artifacts:
+    description: 'Whether to upload build artifacts.'
+    required: false
+    default: 'false' # String false
+  upload-test-results-artifact:
+    description: 'Whether to upload test results as an artifact.'
+    required: false
+    default: 'true' # String true
+  cache-nuget-packages:
+    description: 'Whether to cache NuGet packages.'
+    required: false
+    default: 'true' # String true
+  # Secrets are not directly passed as inputs in composite actions in the same way.
+  # They are typically inherited or passed as environment variables if needed by specific steps.
+  # NUGET_FEED_AUTH_TOKEN will be accessed via env context if set by the caller.
+
+outputs:
+  status:
+    description: "Overall status of the build and test process ('success' or 'failure')."
+    value: ${{ steps.set_final_status.outputs.status }}
+  build-artifact-name:
+    description: 'Name of the uploaded build artifact (if uploaded).'
+    value: ${{ steps.set_build_artifact_name_output_value.outputs.name }}
+  test-results-artifact-name:
+    description: 'Name of the uploaded test results artifact.'
+    value: ${{ steps.upload_test_results.outputs.artifact-name }} # upload-artifact action sets this output
+  published-output-path:
+    description: 'Path to the published application output (if packaged).'
+    value: ${{ inputs.publish-output-directory }} # This is directly from input
+
+runs:
+  using: "composite"
+  steps:
+    # Note: Checkout is assumed to be done by the caller workflow.
+    # If this composite action needs to ensure code is checked out, add:
+    # - name: Checkout repository
+    #   uses: actions/checkout@v4
+
+    - name: Setup .NET SDK
+      if: inputs.dotnet-version-to-use != ''
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ inputs.dotnet-version-to-use }}
+
+    - name: Cache NuGet packages
+      if: inputs.cache-nuget-packages == 'true'
+      uses: actions/cache@v4
+      with:
+        path: ~/.nuget/packages
+        key: ${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json', '**/*.csproj') }}
+        restore-keys: |
+          ${{ runner.os }}-nuget-
+
+    - name: Resolve Solution/Project Paths
+      id: resolve_paths
+      shell: bash -e {0}
+      run: |
+        shopt -s globstar nullglob
+
+        resolve_path() {
+          local pattern="$1"
+          local purpose="$2"
+          local resolved_paths_array=($pattern) # No quotes around pattern to allow glob expansion
+
+          if [ ${#resolved_paths_array[@]} -eq 0 ]; then
+            echo "::error::No file found matching pattern '$pattern' in current directory '$(pwd)' for '$purpose'."
+            echo "Please ensure the file exists, the pattern is correct, and the code is checked out to the correct location."
+            exit 1
+          elif [ ${#resolved_paths_array[@]} -gt 1 ]; then
+            echo "::error::Multiple files found matching pattern '$pattern' for '$purpose':"
+            for file_item in "${resolved_paths_array[@]}"; do echo "  - $file_item"; done
+            echo "Please specify a more precise pattern or path."
+            exit 1
+          fi
+          # Output the resolved path. It will be a single item.
+          echo "${resolved_paths_array[0]}"
+        }
+
+        # Resolve solution path
+        solution_path_pattern="${{ inputs.solution-path }}"
+        resolved_sln_path_val=$(resolve_path "$solution_path_pattern" "main solution/project")
+        echo "Resolved solution path for subsequent steps: '$resolved_sln_path_val'"
+        echo "resolved_solution_path=$resolved_sln_path_val" >> $GITHUB_OUTPUT
+
+        # Resolve test project path (defaults to solution path if not specified)
+        test_project_path_pattern="${{ inputs.test-project-path || inputs.solution-path }}"
+        resolved_test_path_val=$(resolve_path "$test_project_path_pattern" "test project(s)")
+        echo "Resolved test project path for subsequent steps: '$resolved_test_path_val'"
+        echo "resolved_test_project_path=$resolved_test_path_val" >> $GITHUB_OUTPUT
+
+    - name: Restore NuGet packages
+      id: restore_nuget
+      shell: bash
+      run: dotnet restore "${{ steps.resolve_paths.outputs.resolved_solution_path }}" ${{ env.NUGET_FEED_AUTH_TOKEN && format('--configfile <(echo "<?xml version=\"1.0\" encoding=\"utf-8\"?><configuration><packageSources><clear /><add key=\"github\" value=\"https://nuget.pkg.github.com/YOUR_ORG_OR_USER/index.json\" /><add key=\"nuget.org\" value=\"https://api.nuget.org/v3/index.json\" /></packageSources><packageSourceCredentials><github><add key=\"Username\" value=\"PAT\" /><add key=\"ClearTextPassword\" value=\"{0}\" /></github></packageSourceCredentials></configuration>" | sed "s|{0}|$(echo "$NUGET_AUTH_TOKEN_ENV")|g" )', env.NUGET_AUTH_TOKEN_ENV) || '' }}
+      env:
+        NUGET_AUTH_TOKEN_ENV: ${{ env.NUGET_FEED_AUTH_TOKEN_CALLER }} # Caller maps their secret here
+      continue-on-error: false
+
+    - name: Build solution/project
+      id: build
+      shell: bash
+      run: dotnet build "${{ steps.resolve_paths.outputs.resolved_solution_path }}" --configuration "${{ inputs.build-configuration }}" --no-restore
+      continue-on-error: false
+
+    - name: Run tests
+      id: run_tests
+      if: inputs.run-tests == 'true'
+      shell: bash
+      run: |
+        mkdir -p "${{ inputs.test-results-directory }}"
+        dotnet test "${{ steps.resolve_paths.outputs.resolved_test_project_path }}" --configuration "${{ inputs.build-configuration }}" --no-build --no-restore \
+          ${{ inputs.test-filter && format('--filter "{0}"', inputs.test-filter) || '' }} \
+          --logger "${{ inputs.test-results-format }};LogFileName=test_results.${{ inputs.test-results-format }}" \
+          --results-directory "${{ inputs.test-results-directory }}"
+      continue-on-error: true # Allow tests to fail and still upload results
+
+    - name: Publish application
+      id: publish_app
+      if: inputs.package-application == 'true' && steps.build.outcome == 'success'
+      shell: bash
+      run: |
+        set -e # Exit immediately if a command exits with a non-zero status.
+
+        resolved_path="${{ steps.resolve_paths.outputs.resolved_solution_path }}"
+        output_dir="${{ inputs.publish-output-directory }}"
+        config="${{ inputs.build-configuration }}"
+
+        echo "Resolved path for publish: $resolved_path"
+        echo "Target output directory: $output_dir"
+        echo "Build configuration: $config"
+
+        if [[ "$resolved_path" == *.sln ]]; then
+          echo "::group::Publishing projects in solution: $resolved_path"
+          
+          solution_dir=$(dirname "$resolved_path")
+          echo "Solution directory: $solution_dir"
+          
+          mkdir -p "$output_dir"
+
+          original_dir=$(pwd)
+          if ! cd "$solution_dir"; then
+            echo "::error::Failed to change directory to solution directory: $solution_dir"
+            exit 1
+          fi
+          
+          projects_to_publish=$(dotnet sln "$(basename "$resolved_path")" list 2>/dev/null | grep -E '\.(cs|fs|vb)proj$' | awk 'NF > 0 {print}' || true)
+          
+          if ! cd "$original_dir"; then
+            echo "::error::Failed to change back to original directory: $original_dir"
+          fi
+
+          if [ -z "$projects_to_publish" ]; then
+            echo "::warning::No publishable projects found in solution '$resolved_path' using 'dotnet sln list'."
+          else
+            echo "Projects to publish (paths are relative to: $solution_dir):"
+            echo "$projects_to_publish"
+            
+            echo "$projects_to_publish" | while IFS= read -r project_relative_path; do
+              if [ -z "$project_relative_path" ]; then
+                continue
+              fi
+              
+              project_full_path="$solution_dir/$project_relative_path"
+              project_filename=$(basename "$project_relative_path")
+              project_name_for_dir=$(echo "$project_filename" | sed 's/\.\(cs\|fs\|vb\)proj$//')
+
+              if [ ! -f "$project_full_path" ]; then
+                echo "::warning::Project file '$project_full_path' (listed by 'dotnet sln list' but not found on disk). Skipping."
+                continue
+              fi
+              
+              target_project_output_dir="$output_dir/$project_name_for_dir"
+              echo "Publishing project '$project_full_path' to '$target_project_output_dir'"
+              mkdir -p "$target_project_output_dir"
+              dotnet publish "$project_full_path" --configuration "$config" --no-build --no-restore -o "$target_project_output_dir"
+            done
+          fi
+          echo "::endgroup::"
+        else
+          echo "Publishing single project: $resolved_path to $output_dir"
+          mkdir -p "$output_dir"
+          dotnet publish "$resolved_path" --configuration "$config" --no-build --no-restore -o "$output_dir"
+        fi
+
+        echo "Publish step completed."
+      continue-on-error: false
+
+    - name: Upload Test Results Artifact
+      id: upload_test_results # This ID is used for the output
+      if: inputs.run-tests == 'true' && inputs.upload-test-results-artifact == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name-prefix }}-test-results
+        path: ${{ inputs.test-results-directory }}
+        if-no-files-found: warn
+
+    - name: Upload Build Artifact
+      id: upload_build_artifact
+      if: inputs.package-application == 'true' && inputs.upload-build-artifacts == 'true' && steps.publish_app.outcome == 'success'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name-prefix }}-app-package
+        path: ${{ inputs.publish-output-directory }}
+        if-no-files-found: warn
+
+    - name: Set Build Artifact Name Output Value
+      id: set_build_artifact_name_output_value
+      shell: bash
+      run: |
+        name_to_set=""
+        if [[ "${{ inputs.package-application }}" == "true" && \
+              "${{ inputs.upload-build-artifacts }}" == "true" && \
+              "${{ steps.publish_app.outcome }}" == "success" ]]; then
+          name_to_set="${{ inputs.artifact-name-prefix }}-app-package"
+        fi
+        echo "name=$name_to_set" >> "$GITHUB_OUTPUT"
+
+    - name: Set Final Status
+      id: set_final_status
+      shell: bash
+      run: |
+        FINAL_STATUS="success"
+        # Check outcomes of critical steps
+        if [[ "${{ steps.restore_nuget.outcome }}" == "failure" || \
+              "${{ steps.build.outcome }}" == "failure" || \
+              ("${{ inputs.run-tests }}" == "true" && "${{ steps.run_tests.outcome }}" == "failure") || \
+              ("${{ inputs.package-application }}" == "true" && "${{ steps.publish_app.outcome }}" == "failure") ]]; then
+          FINAL_STATUS="failure"
+        fi
+        echo "status=$FINAL_STATUS" >> $GITHUB_OUTPUT
+        # Provide error messaging based on failure
+        if [[ "$FINAL_STATUS" == "failure" && "${{ inputs.run-tests }}" == "true" && "${{ steps.run_tests.outcome }}" == "failure" ]]; then
+          echo "::error::Tests failed. See uploaded test results for details."
+        elif [[ "$FINAL_STATUS" == "failure" ]]; then
+          echo "::error::Build, restore, or publish step failed."
+        fi
+      # Always run this step to set the output
+      if: always()
