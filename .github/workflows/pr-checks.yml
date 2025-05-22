@@ -45,6 +45,7 @@ jobs:
             6.0.x
             7.0.x
             8.0.x
+            9.0.x
 
       - name: Build and Test
         id: build_test
@@ -52,7 +53,7 @@ jobs:
         with:
           solution-path: '**/*.sln'
           build-configuration: 'Release'
-          dotnet-version-to-use: '8.0.x'
+          dotnet-version-to-use: '9.0.x'
           run-tests: true
           test-filter: ''
           artifact-name-prefix: 'pr-${{ github.event.pull_request.number || github.run_id }}'

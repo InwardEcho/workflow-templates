@@ -125,7 +125,7 @@ jobs:
     with:
       solution-path: '**/*.sln'
       build-configuration: 'Release'
-      dotnet-version-to-use: '8.0.x' # Or from input
+      dotnet-version-to-use: '9.0.x' # Or from input
       run-tests: true
       package-application: true
       publish-output-directory: './app-publish'
