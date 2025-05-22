@@ -268,8 +268,6 @@ jobs:
     if: always()
     secrets:
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL_CI }}
-      # Add other secrets the reusable-observability-hooks.yml might need, e.g., TEAMS_WEBHOOK_URL, GITHUB_TOKEN for PR comments
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # If PR comments are used
     with:
       status: ${{ needs.gather_reporting_data_job.outputs.final_ci_status }}
       workflow-name: "${{ github.workflow }} on ${{ github.ref_name }}"
