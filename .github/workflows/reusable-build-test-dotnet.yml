@@ -129,23 +129,78 @@ jobs:
 
       - name: Restore NuGet packages
         id: restore_nuget
-        run: dotnet restore ${{ inputs.solution-path }} ${{ secrets.NUGET_FEED_AUTH_TOKEN && format('--configfile <(echo "<?xml version=\"1.0\" encoding=\"utf-8\"?><configuration><packageSources><clear /><add key=\"github\" value=\"https://nuget.pkg.github.com/YOUR_ORG_OR_USER/index.json\" /><add key=\"nuget.org\" value=\"https://api.nuget.org/v3/index.json\" /></packageSources><packageSourceCredentials><github><add key=\"Username\" value=\"PAT\" /><add key=\"ClearTextPassword\" value=\"{0}\" /></github></packageSourceCredentials></configuration>" | sed "s/{0}/$(echo $NUGET_AUTH_TOKEN)/g" )', secrets.NUGET_FEED_AUTH_TOKEN) || '' }}
+        run: |
+          shopt -s globstar nullglob
+          pattern_to_resolve="${{ inputs.solution-path }}"
+          resolved_paths=($pattern_to_resolve)
+
+          if [ ${#resolved_paths[@]} -eq 0 ]; then
+            echo "::error::No file found matching pattern '$pattern_to_resolve' in current directory '$(pwd)' for 'dotnet restore'."
+            echo "Please ensure the file exists and the pattern is correct, or that the code is checked out."
+            exit 1
+          elif [ ${#resolved_paths[@]} -gt 1 ]; then
+            echo "::error::Multiple files found matching pattern '$pattern_to_resolve':"
+            for file in "${resolved_paths[@]}"; do echo "  - $file"; done
+            echo "Please specify a more precise pattern or path for 'dotnet restore'."
+            exit 1
+          fi
+
+          TARGET_FILE_PATH="${resolved_paths[0]}"
+          echo "Using solution/project for restore: '$TARGET_FILE_PATH'"
+          dotnet restore "$TARGET_FILE_PATH" ${{ secrets.NUGET_FEED_AUTH_TOKEN && format('--configfile <(echo "<?xml version=\"1.0\" encoding=\"utf-8\"?><configuration><packageSources><clear /><add key=\"github\" value=\"https://nuget.pkg.github.com/YOUR_ORG_OR_USER/index.json\" /><add key=\"nuget.org\" value=\"https://api.nuget.org/v3/index.json\" /></packageSources><packageSourceCredentials><github><add key=\"Username\" value=\"PAT\" /><add key=\"ClearTextPassword\" value=\"{0}\" /></github></packageSourceCredentials></configuration>" | sed "s|{0}|$(echo "$NUGET_AUTH_TOKEN")|g" )', secrets.NUGET_FEED_AUTH_TOKEN) || '' }}
+        shell: bash -e {0}
         env:
           NUGET_AUTH_TOKEN: ${{ secrets.NUGET_FEED_AUTH_TOKEN }}
         continue-on-error: false
 
       - name: Build solution/project
         id: build
-        run: dotnet build ${{ inputs.solution-path }} --configuration "${{ inputs.build-configuration }}" --no-restore
+        run: |
+          shopt -s globstar nullglob
+          pattern_to_resolve="${{ inputs.solution-path }}"
+          resolved_paths=($pattern_to_resolve)
+
+          if [ ${#resolved_paths[@]} -eq 0 ]; then
+            echo "::error::No file found matching pattern '$pattern_to_resolve' in current directory '$(pwd)' for 'dotnet build'."
+            exit 1
+          elif [ ${#resolved_paths[@]} -gt 1 ]; then
+            echo "::error::Multiple files found matching pattern '$pattern_to_resolve':"
+            for file in "${resolved_paths[@]}"; do echo "  - $file"; done
+            echo "Please specify a more precise pattern or path for 'dotnet build'."
+            exit 1
+          fi
+
+          TARGET_FILE_PATH="${resolved_paths[0]}"
+          echo "Using solution/project for build: '$TARGET_FILE_PATH'"
+          dotnet build "$TARGET_FILE_PATH" --configuration "${{ inputs.build-configuration }}" --no-restore
+        shell: bash -e {0}
         continue-on-error: false
 
       - name: Run tests
         id: run_tests
         if: inputs.run-tests == true
         run: |
-          _test_path_input="${{ inputs.test-project-path || inputs.solution-path }}"
+          shopt -s globstar nullglob
+          # Determine the pattern to use for tests
+          test_pattern_to_resolve="${{ inputs.test-project-path || inputs.solution-path }}"
+          
+          resolved_test_paths=($test_pattern_to_resolve)
+
+          if [ ${#resolved_test_paths[@]} -eq 0 ]; then
+            echo "::error::No file found matching test pattern '$test_pattern_to_resolve' in current directory '$(pwd)' for 'dotnet test'."
+            exit 1
+          elif [ ${#resolved_test_paths[@]} -gt 1 ]; then
+            echo "::error::Multiple files found matching test pattern '$test_pattern_to_resolve':"
+            for file in "${resolved_test_paths[@]}"; do echo "  - $file"; done
+            echo "Please specify a more precise pattern or path for 'dotnet test'."
+            exit 1
+          fi
+
+          TEST_TARGET_FILE_PATH="${resolved_test_paths[0]}"
+          echo "Using solution/project for test: '$TEST_TARGET_FILE_PATH'"
+          
           mkdir -p "${{ inputs.test-results-directory }}"
-          dotnet test $_test_path_input --configuration "${{ inputs.build-configuration }}" --no-build --no-restore \
+          dotnet test "$TEST_TARGET_FILE_PATH" --configuration "${{ inputs.build-configuration }}" --no-build --no-restore \
             ${{ inputs.test-filter && format('--filter "{0}"', inputs.test-filter) || '' }} \
             --logger "${{ inputs.test-results-format }};LogFileName=test_results.${{ inputs.test-results-format }}" \
             --results-directory "${{ inputs.test-results-directory }}"
@@ -154,7 +209,25 @@ jobs:
       - name: Publish application
         id: publish_app
         if: inputs.package-application == true && steps.build.outcome == 'success'
-        run: dotnet publish ${{ inputs.solution-path }} --configuration "${{ inputs.build-configuration }}" --no-build --no-restore -o "${{ inputs.publish-output-directory }}"
+        run: |
+          shopt -s globstar nullglob
+          pattern_to_resolve="${{ inputs.solution-path }}"
+          resolved_paths=($pattern_to_resolve)
+
+          if [ ${#resolved_paths[@]} -eq 0 ]; then
+            echo "::error::No file found matching pattern '$pattern_to_resolve' in current directory '$(pwd)' for 'dotnet publish'."
+            exit 1
+          elif [ ${#resolved_paths[@]} -gt 1 ]; then
+            echo "::error::Multiple files found matching pattern '$pattern_to_resolve':"
+            for file in "${resolved_paths[@]}"; do echo "  - $file"; done
+            echo "Please specify a more precise pattern or path for 'dotnet publish'."
+            exit 1
+          fi
+
+          TARGET_FILE_PATH="${resolved_paths[0]}"
+          echo "Using solution/project for publish: '$TARGET_FILE_PATH'"
+          dotnet publish "$TARGET_FILE_PATH" --configuration "${{ inputs.build-configuration }}" --no-build --no-restore -o "${{ inputs.publish-output-directory }}"
+        shell: bash -e {0}
         continue-on-error: false
 
       - name: Upload Test Results Artifact
