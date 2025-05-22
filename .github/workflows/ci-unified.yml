@@ -36,9 +36,6 @@ on:
       SLACK_WEBHOOK_URL_CI:
         description: 'Slack Webhook URL for CI notifications.'
         required: false # Set to true if notifications are mandatory
-      GITHUB_TOKEN:
-        description: 'Github token'
-        required: false
 
 permissions:
   contents: read      # To checkout code
