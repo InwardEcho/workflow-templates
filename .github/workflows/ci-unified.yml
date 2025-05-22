@@ -170,8 +170,8 @@ jobs:
   trigger_dev_deployment:
     name: Trigger DEV Deployment
     runs-on: ubuntu-latest
-    needs: [initialize_ci, calculate_version, build_and_test_application, invoke_publish_nuget_reusable_workflow_job] # Adjusted dependencies
-    if: needs.build_and_test_application.outputs.status == 'success' && (needs.invoke_publish_nuget_reusable_workflow_job.outputs.status == 'success' || needs.invoke_publish_nuget_reusable_workflow_job.outputs.status == 'skipped' || ${{ needs.initialize_ci.outputs.is_main_branch == 'true' }})
+    needs: [initialize_ci, calculate_version, build_and_test_application] # Adjusted dependencies
+    if: needs.build_and_test_application.outputs.status == 'success'
 
     steps:
       - name: Dispatch DEV Deployment Workflow
@@ -182,7 +182,8 @@ jobs:
           inputs: |
             {
               "version_to_deploy": "${{ needs.calculate_version.outputs.calculated-version }}",
-              "source_artifact_name": "${{ needs.build_and_test_application.outputs.build-artifact-name }}"
+              "source_artifact_name": "${{ needs.build_and_test_application.outputs.build-artifact-name }}",
+              "target_environment_type": "dev"
             }
           ref: ${{ github.ref }}
 
