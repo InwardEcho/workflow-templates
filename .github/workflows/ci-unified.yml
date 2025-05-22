@@ -13,6 +13,15 @@ on:
         required: false
         type: string # Even if conceptually a choice, workflow_call inputs are string, boolean, or number
         default: 'warning'
+      enable_cd:
+        description: 'Whether to enable continious delivery'
+        required: false
+        type: boolean
+        default: false
+      cd_workflow:
+        description: 'Path to cd workflow'
+        required: false # required when enabled_cd is true
+        type: string
       # Potentially add other inputs if parts of this CI pipeline should be configurable by the caller
       # For example:
       # solution_path:
@@ -171,14 +180,13 @@ jobs:
     name: Trigger DEV Deployment
     runs-on: ubuntu-latest
     needs: [initialize_ci, calculate_version, build_and_test_application] # Adjusted dependencies
-    if: needs.build_and_test_application.outputs.status == 'success'
+    if: needs.build_and_test_application.outputs.status == 'success' && vars.enable_cd && vars.cd_workflow != ''
 
     steps:
       - name: Dispatch DEV Deployment Workflow
         uses: benc-uk/workflow-dispatch@v1
         with:
-          workflow: unified-cd-workflow.yml
-          repo: InwardEcho/workflow-templates
+          workflow: ${{ vars.cd_workflow }}
           token: ${{ secrets.WORKFLOW_DISPATCH_PAT }}
           ref: 'main'
           inputs: |
