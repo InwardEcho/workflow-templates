@@ -37,6 +37,10 @@ on:
         required: false
         type: string
         default: '8.0.x'
+      source_run_id: # New input
+        description: 'The run ID of the CI workflow that produced the artifact'
+        required: true
+        type: string
     secrets:
       DB_CONNECTION_STRING:
         description: 'Database connection string for migrations'
@@ -78,14 +82,18 @@ jobs:
       deploy_dev: ${{ steps.evaluate_scope.outputs.deploy_dev }}
       deploy_test: ${{ steps.evaluate_scope.outputs.deploy_test }}
       deploy_prod: ${{ steps.evaluate_scope.outputs.deploy_prod }}
+      source_branch: ${{ steps.evaluate_scope.outputs.source_branch }} # New output
       is_main_pipeline: ${{ steps.evaluate_scope.outputs.is_main_pipeline }}
       version: ${{ github.event.inputs.version_to_deploy }}
       artifact_name: ${{ github.event.inputs.source_artifact_name }}
       db_migration_project_path: ${{ github.event.inputs.db_migration_project_path }}
     steps:
-      - name: Evaluate Deployment Scope
+      - name: Evaluate Deployment Scope and Fetch Source Branch
         id: evaluate_scope
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ github.event.inputs.source_run_id }}
         run: |
           VERSION="${{ github.event.inputs.version_to_deploy }}"
           ARTIFACT_NAME="${{ github.event.inputs.source_artifact_name }}"
@@ -131,6 +139,15 @@ jobs:
               ;;
           esac
 
+          # Fetch source branch using GitHub API
+          SOURCE_BRANCH=$(gh api /repos/${{ github.repository }}/actions/runs/$SOURCE_RUN_ID | jq -r '.head_branch')
+          if [ -z "$SOURCE_BRANCH" ] || [ "$SOURCE_BRANCH" == "null" ] || [ "$SOURCE_BRANCH" == "" ]; then
+            echo "::error::Could not determine source branch for run ID $SOURCE_RUN_ID. Received: '$SOURCE_BRANCH'"
+            exit 1
+          fi
+          echo "Source Branch: $SOURCE_BRANCH"
+          echo "source_branch=$SOURCE_BRANCH" >> $GITHUB_OUTPUT
+
           echo "deploy_dev=$DEPLOY_DEV" >> $GITHUB_OUTPUT
           echo "deploy_test=$DEPLOY_TEST" >> $GITHUB_OUTPUT
           echo "deploy_prod=$DEPLOY_PROD" >> $GITHUB_OUTPUT
@@ -148,6 +165,11 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: 'DEV: Log Source Branch'
+        shell: bash
+        run: |
+          echo "Deployment to DEV from source branch: ${{ needs.determine_deployment_stages.outputs.source_branch }}"
 
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
@@ -209,6 +231,18 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: 'TEST: Validate Source Branch'
+        shell: bash
+        run: |
+          SOURCE_BRANCH="${{ needs.determine_deployment_stages.outputs.source_branch }}"
+          echo "Validating deployment to TEST from source branch: $SOURCE_BRANCH"
+          if [[ "$SOURCE_BRANCH" == "main" || "$SOURCE_BRANCH" == feature/* ]]; then
+            echo "Branch $SOURCE_BRANCH is valid for TEST environment."
+          else
+            echo "::error::Branch '$SOURCE_BRANCH' is not allowed for TEST environment. Allowed branches: main, feature/*."
+            exit 1
+          fi
+
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
         if: inputs.db_migration_project_path != ''
@@ -268,6 +302,18 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: 'PROD: Validate Source Branch'
+        shell: bash
+        run: |
+          SOURCE_BRANCH="${{ needs.determine_deployment_stages.outputs.source_branch }}"
+          echo "Validating deployment to PROD from source branch: $SOURCE_BRANCH"
+          if [[ "$SOURCE_BRANCH" == "main" ]]; then
+            echo "Branch $SOURCE_BRANCH is valid for PROD environment."
+          else
+            echo "::error::Branch '$SOURCE_BRANCH' is not allowed for PROD environment. Allowed branch: main."
+            exit 1
+          fi
 
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
