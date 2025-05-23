@@ -145,8 +145,8 @@ runs:
     - name: Set Default Version if strategy failed or not GitVersion
       id: set_default_version
       # Run if GitVersion was the strategy but produced no output, OR if another strategy was chosen but didn't output fullSemVer.
-      if: (inputs.strategy == 'gitversion' && steps.gitversion_execute.outputs.fullSemVer == '') || \
-          (inputs.strategy == 'tag_based' && steps.tag_based_version.outputs.fullSemVer == '') || \
+      if: (inputs.strategy == 'gitversion' && steps.gitversion_execute.outputs.fullSemVer == '') || 
+          (inputs.strategy == 'tag_based' && steps.tag_based_version.outputs.fullSemVer == '') || 
           (inputs.strategy == 'run_number_semantic' && steps.run_number_version.outputs.fullSemVer == '')
       shell: bash
       run: |
