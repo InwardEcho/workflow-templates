@@ -28,7 +28,23 @@ inputs:
     description: '.NET SDK version to use for EF Core tools.'
     required: false
     default: '7.0.x'
-  # DB_CONNECTION_STRING is a secret, handled via env context
+  migration_script_path:
+    description: 'Optional path to a pre-generated SQL migration script. If provided, this script will be applied using sqlcmd.'
+    required: false
+    default: ''
+  sql_server:
+    description: 'SQL Server name/address. Required if migration_script_path is provided.'
+    required: false
+  sql_database:
+    description: 'SQL Database name. Required if migration_script_path is provided.'
+    required: false
+  sql_user:
+    description: 'SQL User name. Required if migration_script_path is provided.'
+    required: false
+  sql_password:
+    description: 'SQL Password. Required if migration_script_path is provided. Should be a secret.'
+    required: false
+  # DB_CONNECTION_STRING is a secret, handled via env context for dotnet ef path
 
 outputs:
   status:
@@ -36,10 +52,10 @@ outputs:
     value: ${{ steps.set_final_status.outputs.status }}
   backup_status:
     description: "Status of the backup step ('success', 'failure', or 'skipped')."
-    value: ${{ steps.backup_database.outcome || 'skipped' }} # Outcome can be success, failure, skipped
+    value: ${{ steps.backup_database.outcome || 'skipped' }}
   migration_apply_status:
     description: "Status of applying migrations ('success', 'failure', or 'skipped')."
-    value: ${{ steps.apply_migrations.outcome || 'skipped' }}
+    value: ${{ steps.apply_sql_script.outcome || steps.apply_ef_cli.outcome || 'skipped' }}
 
 runs:
   using: "composite"
@@ -61,6 +77,21 @@ runs:
         dotnet tool install --global dotnet-ef --version $DOTNET_MAJOR_MINOR.*
         # Ensure EF tools are on the PATH (usually handled by setup-dotnet or tool installer)
         echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
+
+    - name: Install SQLCMD Tools
+      id: install_sqlcmd
+      if: inputs.migration_script_path != '' && inputs.migration_script_path != null
+      shell: bash
+      run: |
+        echo "Attempting to install mssql-tools..."
+        # Add Microsoft SQL Server repository
+        curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
+        curl https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
+        sudo apt-get update
+        # Install SQL Server tools
+        sudo ACCEPT_EULA=Y apt-get install -y mssql-tools unixodbc-dev
+        echo "/opt/mssql-tools/bin" >> $GITHUB_PATH
+        sqlcmd -? || (echo "::error::sqlcmd not found after attempting install" && exit 1)
 
     - name: Backup Database (Optional)
       id: backup_database
@@ -86,38 +117,54 @@ runs:
         DB_CONNECTION_STRING_FOR_BACKUP: ${{ env.DB_CONNECTION_STRING_CALLER }}
       continue-on-error: false # Backup failure should stop the process if backup is required
 
-    - name: Apply EF Core Migrations
-      id: apply_migrations
-      # Condition: Run if backup is not required OR if backup was required and succeeded.
-      if: (inputs.backup-required == 'false') || (inputs.backup-required == 'true' && steps.backup_database.outcome == 'success')
+    - name: Apply SQL Migration Script
+      id: apply_sql_script
+      if: >
+        ((inputs.backup-required == 'false') || (inputs.backup-required == 'true' && steps.backup_database.outcome == 'success')) &&
+        inputs.migration_script_path != '' && inputs.migration_script_path != null
       shell: bash
       run: |
-        echo "Applying EF Core migrations to ${{ inputs.environment-name }} database..."
+        echo "Applying SQL migration script: ${{ inputs.migration_script_path }} to ${{ inputs.sql_database }} on ${{ inputs.sql_server }}"
+        sqlcmd -S "${{ inputs.sql_server }}" -d "${{ inputs.sql_database }}" -U "${{ inputs.sql_user }}" -P "${{ inputs.sql_password }}" -i "${{ inputs.migration_script_path }}" -b -C
+      continue-on-error: false
+
+    - name: Apply EF Core Migrations via CLI
+      id: apply_ef_cli
+      if: >
+        ((inputs.backup-required == 'false') || (inputs.backup-required == 'true' && steps.backup_database.outcome == 'success')) &&
+        (inputs.migration_script_path == '' || inputs.migration_script_path == null)
+      shell: bash
+      run: |
+        echo "Applying EF Core migrations to ${{ inputs.environment-name }} database via CLI..."
         echo "Project path: ${{ inputs.efcore-project-path }}"
-        # Using timeout command to limit execution time
         timeout ${{ inputs.migration-timeout }} dotnet ef database update --project "${{ inputs.efcore-project-path }}" --verbose
       env:
-        # EF Core CLI typically picks up connection strings from appsettings.json or environment-name variables.
-        # This sets an environment-name variable that ASP.NET Core configuration system can use.
-        # Adjust the key 'DefaultConnection' if your app uses a different one.
         ConnectionStrings__DefaultConnection: ${{ env.DB_CONNECTION_STRING_CALLER }}
-      continue-on-error: false # Migration failure should stop the process
+      continue-on-error: false
 
     - name: Set Final Status
       id: set_final_status
       shell: bash
       run: |
         FINAL_STATUS="success"
+        MIGRATION_STEP_OUTCOME=""
+        # Determine which migration step was attempted
+        if [[ -n "${{ inputs.migration_script_path }}" && "${{ inputs.migration_script_path }}" != "" ]]; then
+          MIGRATION_STEP_OUTCOME="${{ steps.apply_sql_script.outcome }}"
+        else
+          MIGRATION_STEP_OUTCOME="${{ steps.apply_ef_cli.outcome }}"
+        fi
+
         # Check backup step outcome if it was supposed to run
         if [[ "${{ inputs.backup-required }}" == "true" && "${{ steps.backup_database.outcome }}" == "failure" ]]; then
           FINAL_STATUS="failure"
           echo "::error::Database backup step failed."
         # Check migration step outcome
-        elif [[ "${{ steps.apply_migrations.outcome }}" == "failure" ]]; then
+        elif [[ "$MIGRATION_STEP_OUTCOME" == "failure" ]]; then
           FINAL_STATUS="failure"
-          echo "::error::Applying EF Core migrations failed."
+          echo "::error::Applying migrations failed (Outcome: $MIGRATION_STEP_OUTCOME)."
         # Check if migrations were skipped because a required backup didn't succeed
-        elif [[ "${{ steps.apply_migrations.outcome }}" == "skipped" && \
+        elif [[ "$MIGRATION_STEP_OUTCOME" == "skipped" && \
                 "${{ inputs.backup-required }}" == "true" && \
                 "${{ steps.backup_database.outcome }}" != "success" ]]; then
           FINAL_STATUS="failure"

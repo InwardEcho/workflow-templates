@@ -325,6 +325,7 @@ jobs:
     name: 'Deploy to DEV Environment'
     needs: [determine_deployment_stages, plan_to_dev]
     if: needs.determine_deployment_stages.outputs.deploy_dev == 'true' && needs.plan_to_dev.result == 'success'
+    environment: dev
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -344,26 +345,6 @@ jobs:
           name: dev-migration-script
           path: .
 
-      - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v4
-        if: inputs.db_migration_project_path != ''
-        with:
-          dotnet-version: ${{ inputs.dotnet_version }}
-
-      - name: Install SQLCMD Tools
-        if: inputs.db_migration_project_path != ''
-        shell: bash
-        run: |
-          echo "Attempting to install mssql-tools..."
-          # Add Microsoft SQL Server repository
-          curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
-          curl https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
-          sudo apt-get update
-          # Install SQL Server tools
-          sudo ACCEPT_EULA=Y apt-get install -y mssql-tools unixodbc-dev
-          echo "/opt/mssql-tools/bin" >> $GITHUB_PATH
-          sqlcmd -? || (echo "::error::sqlcmd not found after attempting install" && exit 1)
-
       - name: 'DEV: Apply Infrastructure (Terraform)'
         if: inputs.terraform_directory != ''
         uses: InwardEcho/workflow-templates/.github/actions/composite-terraform-iac@main
@@ -380,14 +361,22 @@ jobs:
           AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
 
-      - name: 'DEV: Apply Database Migration Script'
+      - name: 'DEV: Apply Database Migrations'
         if: inputs.db_migration_project_path != ''
-        shell: bash
-        run: |
-          echo "Applying migration script dev_migration_script.sql"
-          sqlcmd -S ${{ vars.DEV_DB_SERVER }} -d ${{ vars.DEV_DB_NAME }} -U ${{ vars.DEV_DB_USER }} -P "${{ secrets.DEV_DB_PASSWORD }}" -i dev_migration_script.sql -b -C
+        uses: InwardEcho/workflow-templates/.github/actions/composite-efcore-migration@main
+        with:
+          efcore-project-path: ${{ needs.determine_deployment_stages.outputs.db_migration_project_path }}
+          environment-name: 'dev'
+          backup-required: false
+          migration_script_path: './dev_migration_script.sql'
+          sql_server: ${{ vars.DEV_DB_SERVER }}
+          sql_database: ${{ vars.DEV_DB_NAME }}
+          sql_user: ${{ vars.DEV_DB_USER }}
+          sql_password: ${{ secrets.DEV_DB_PASSWORD }}
+          dotnet-version: ${{ inputs.dotnet_version }}
         env:
-          SQL_PASSWORD: ${{ secrets.DEV_DB_PASSWORD }}
+          # This is for the dotnet ef database update path within the composite action, if script path is not used.
+          DB_CONNECTION_STRING_CALLER: ${{ secrets.DEV_DB_CONNECTION_STRING }}
 
       - name: 'DEV: Deploy Application'
         id: deploy_app
@@ -426,6 +415,7 @@ jobs:
         needs.determine_deployment_stages.outputs.deploy_dev == 'false' ||
         (needs.determine_deployment_stages.outputs.deploy_dev == 'true' && needs.deploy_to_dev.result == 'success')
       )
+    environment: test
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -461,34 +451,22 @@ jobs:
           AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
 
-      - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v4
+      - name: 'TEST: Apply Database Migrations'
         if: inputs.db_migration_project_path != ''
+        uses: InwardEcho/workflow-templates/.github/actions/composite-efcore-migration@main
         with:
+          efcore-project-path: ${{ needs.determine_deployment_stages.outputs.db_migration_project_path }}
+          environment-name: 'test'
+          backup-required: false
+          migration_script_path: './test_migration_script.sql'
+          sql_server: ${{ vars.TEST_DB_SERVER }}
+          sql_database: ${{ vars.TEST_DB_NAME }}
+          sql_user: ${{ vars.TEST_DB_USER }}
+          sql_password: ${{ secrets.TEST_DB_PASSWORD }}
           dotnet-version: ${{ inputs.dotnet_version }}
-
-      - name: Install SQLCMD Tools
-        if: inputs.db_migration_project_path != ''
-        shell: bash
-        run: |
-          echo "Attempting to install mssql-tools..."
-          # Add Microsoft SQL Server repository
-          curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
-          curl https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
-          sudo apt-get update
-          # Install SQL Server tools
-          sudo ACCEPT_EULA=Y apt-get install -y mssql-tools unixodbc-dev
-          echo "/opt/mssql-tools/bin" >> $GITHUB_PATH
-          sqlcmd -? || (echo "::error::sqlcmd not found after attempting install" && exit 1)
-
-      - name: 'TEST: Apply Database Migration Script'
-        if: inputs.db_migration_project_path != ''
-        shell: bash
-        run: |
-          echo "Applying migration script test_migration_script.sql"
-          sqlcmd -S ${{ vars.TEST_DB_SERVER }} -d ${{ vars.TEST_DB_NAME }} -U ${{ vars.TEST_DB_USER }} -P "${{ secrets.TEST_DB_PASSWORD }}" -i test_migration_script.sql -b -C
         env:
-          SQL_PASSWORD: ${{ secrets.TEST_DB_PASSWORD }}
+          # This is for the dotnet ef database update path within the composite action, if script path is not used.
+          DB_CONNECTION_STRING_CALLER: ${{ secrets.TEST_DB_CONNECTION_STRING }}
 
       - name: 'TEST: Deploy Application'
         id: deploy_app
@@ -524,6 +502,7 @@ jobs:
       needs.determine_deployment_stages.outputs.deploy_prod == 'true' &&
       needs.plan_to_prod.result == 'success' &&
       needs.deploy_to_test.result == 'success'
+    environment: prod
     runs-on: ubuntu-latest
     outputs:
       canary_status: ${{ steps.canary_deployment.outputs.canary_status }}
@@ -561,34 +540,22 @@ jobs:
           AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
 
-      - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v4
+      - name: 'PROD: Apply Database Migrations'
         if: inputs.db_migration_project_path != ''
+        uses: InwardEcho/workflow-templates/.github/actions/composite-efcore-migration@main
         with:
+          efcore-project-path: ${{ needs.determine_deployment_stages.outputs.db_migration_project_path }}
+          environment-name: 'prod'
+          backup-required: true # As per original prod config
+          migration_script_path: './prod_migration_script.sql'
+          sql_server: ${{ vars.PROD_DB_SERVER }}
+          sql_database: ${{ vars.PROD_DB_NAME }}
+          sql_user: ${{ vars.PROD_DB_USER }}
+          sql_password: ${{ secrets.PROD_DB_PASSWORD }}
           dotnet-version: ${{ inputs.dotnet_version }}
-
-      - name: Install SQLCMD Tools
-        if: inputs.db_migration_project_path != ''
-        shell: bash
-        run: |
-          echo "Attempting to install mssql-tools..."
-          # Add Microsoft SQL Server repository
-          curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
-          curl https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
-          sudo apt-get update
-          # Install SQL Server tools
-          sudo ACCEPT_EULA=Y apt-get install -y mssql-tools unixodbc-dev
-          echo "/opt/mssql-tools/bin" >> $GITHUB_PATH
-          sqlcmd -? || (echo "::error::sqlcmd not found after attempting install" && exit 1)
-
-      - name: 'PROD: Apply Database Migration Script'
-        if: inputs.db_migration_project_path != ''
-        shell: bash
-        run: |
-          echo "Applying migration script prod_migration_script.sql"
-          sqlcmd -S ${{ vars.PROD_DB_SERVER }} -d ${{ vars.PROD_DB_NAME }} -U ${{ vars.PROD_DB_USER }} -P "${{ secrets.PROD_DB_PASSWORD }}" -i prod_migration_script.sql -b -C
         env:
-          SQL_PASSWORD: ${{ secrets.PROD_DB_PASSWORD }}
+          # This is for the dotnet ef database update path within the composite action, if script path is not used.
+          DB_CONNECTION_STRING_CALLER: ${{ secrets.PROD_DB_CONNECTION_STRING }}
 
       - name: 'PROD: Deploy Application'
         id: deploy_app
