@@ -8,10 +8,6 @@ name: Sequential CD Workflow - Composite Actions
 on:
   workflow_call:
     inputs:
-      version_to_deploy:
-        description: 'Version to deploy (e.g., 1.2.3 or 1.2.3-feature-xyz.5)'
-        required: true
-        type: string
       source_artifact_name:
         description: 'Name of the build artifact to download (e.g., release-1.2.3-app-package)'
         required: true
@@ -67,7 +63,7 @@ permissions:
   id-token: write      # For OIDC with cloud providers
 
 concurrency:
-  group: sequential-cd-composite-${{ github.event.inputs.deployment_scope }}-${{ github.event.inputs.version_to_deploy }}
+  group: sequential-cd-composite-${{ github.event.inputs.deployment_scope }}-${{ github.event.inputs.source_run_id }}
   cancel-in-progress: false
 
 env:
@@ -84,7 +80,6 @@ jobs:
       deploy_prod: ${{ steps.evaluate_scope.outputs.deploy_prod }}
       source_branch: ${{ steps.evaluate_scope.outputs.source_branch }} # New output
       is_main_pipeline: ${{ steps.evaluate_scope.outputs.is_main_pipeline }}
-      version: ${{ github.event.inputs.version_to_deploy }}
       artifact_name: ${{ github.event.inputs.source_artifact_name }}
       db_migration_project_path: ${{ github.event.inputs.db_migration_project_path }}
     steps:
@@ -95,7 +90,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SOURCE_RUN_ID: ${{ github.event.inputs.source_run_id }}
         run: |
-          VERSION="${{ github.event.inputs.version_to_deploy }}"
           ARTIFACT_NAME="${{ github.event.inputs.source_artifact_name }}"
           DEPLOYMENT_SCOPE="${{ github.event.inputs.deployment_scope }}"
           
