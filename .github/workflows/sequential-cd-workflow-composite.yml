@@ -196,6 +196,126 @@ jobs:
           path: dev_migration_script.sql
           retention-days: 3
 
+  plan_to_test:
+    name: 'Plan for TEST Environment'
+    needs: determine_deployment_stages
+    if: needs.determine_deployment_stages.outputs.deploy_test == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        if: inputs.db_migration_project_path != ''
+        with:
+          dotnet-version: ${{ inputs.dotnet_version }}
+
+      - name: Install EF Core Tools
+        shell: bash
+        if: inputs.db_migration_project_path != ''
+        run: |
+          dotnet tool install --global dotnet-ef
+          echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
+
+      - name: 'TEST: Generate Database Migration Script'
+        shell: bash
+        if: inputs.db_migration_project_path != ''
+        run: dotnet ef migrations script -o test_migration_script.sql --project ${{ inputs.db_migration_project_path }} --idempotent
+        env:
+          DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
+
+      - name: 'TEST: Generate Infrastructure Plan'
+        if: inputs.terraform_directory != ''
+        uses: InwardEcho/workflow-templates/.github/actions/composite-terraform-iac@main
+        with:
+          working-directory: ${{ inputs.terraform_directory }}
+          terraform-command: 'plan'
+          environment-name: 'test'
+          var-file: 'terraform.test.tfvars'
+          plan-output-file: 'test.tfplan'
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+
+      - name: Upload TEST Terraform Plan
+        if: inputs.terraform_directory != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-terraform-plan
+          path: ${{ inputs.terraform_directory }}/test.tfplan
+          retention-days: 3
+
+      - name: Upload TEST Migration Script
+        if: inputs.db_migration_project_path != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-migration-script
+          path: test_migration_script.sql
+          retention-days: 3
+
+  plan_to_prod:
+    name: 'Plan for PROD Environment'
+    needs: determine_deployment_stages
+    if: needs.determine_deployment_stages.outputs.deploy_prod == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        if: inputs.db_migration_project_path != ''
+        with:
+          dotnet-version: ${{ inputs.dotnet_version }}
+
+      - name: Install EF Core Tools
+        shell: bash
+        if: inputs.db_migration_project_path != ''
+        run: |
+          dotnet tool install --global dotnet-ef
+          echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
+
+      - name: 'PROD: Generate Database Migration Script'
+        shell: bash
+        if: inputs.db_migration_project_path != ''
+        run: dotnet ef migrations script -o prod_migration_script.sql --project ${{ inputs.db_migration_project_path }} --idempotent
+        env:
+          DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
+
+      - name: 'PROD: Generate Infrastructure Plan'
+        if: inputs.terraform_directory != ''
+        uses: InwardEcho/workflow-templates/.github/actions/composite-terraform-iac@main
+        with:
+          working-directory: ${{ inputs.terraform_directory }}
+          terraform-command: 'plan'
+          environment-name: 'prod'
+          var-file: 'terraform.prod.tfvars'
+          plan-output-file: 'prod.tfplan'
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+
+      - name: Upload PROD Terraform Plan
+        if: inputs.terraform_directory != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: prod-terraform-plan
+          path: ${{ inputs.terraform_directory }}/prod.tfplan
+          retention-days: 3
+
+      - name: Upload PROD Migration Script
+        if: inputs.db_migration_project_path != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: prod-migration-script
+          path: prod_migration_script.sql
+          retention-days: 3
+
   # --- DEV Stage as a single job ---
   deploy_to_dev:
     name: 'Deploy to DEV Environment'
@@ -293,9 +413,10 @@ jobs:
   # --- TEST Stage as a single job ---
   deploy_to_test:
     name: 'Deploy to TEST Environment'
-    needs: [determine_deployment_stages, deploy_to_dev]
+    needs: [determine_deployment_stages, plan_to_test, deploy_to_dev]
     if: >
       needs.determine_deployment_stages.outputs.deploy_test == 'true' &&
+      needs.plan_to_test.result == 'success' &&
       (
         needs.determine_deployment_stages.outputs.deploy_dev == 'false' ||
         (needs.determine_deployment_stages.outputs.deploy_dev == 'true' && needs.deploy_to_dev.result == 'success')
@@ -305,28 +426,64 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Download TEST Terraform Plan
+        if: inputs.terraform_directory != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: test-terraform-plan
+          path: ${{ inputs.terraform_directory }}
+
+      - name: Download TEST Migration Script
+        if: inputs.db_migration_project_path != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: test-migration-script
+          path: . # Download to workspace root
+
       - name: 'TEST: Apply Infrastructure (Terraform)'
+        if: inputs.terraform_directory != ''
         uses: InwardEcho/workflow-templates/.github/actions/composite-terraform-iac@main
         with:
-          working-directory: './Infra/test'
+          working-directory: ${{ inputs.terraform_directory }}
           terraform-command: 'apply'
           environment-name: 'test'
           var-file: 'terraform.test.tfvars'
-          apply-auto-approve: false
+          apply-auto-approve: false # Or true, as per current logic
+          plan-output-file: 'test.tfplan' # Use downloaded plan
         env:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
 
-      - name: 'TEST: Apply Database Migrations'
-        uses: InwardEcho/workflow-templates/.github/actions/composite-efcore-migration@main
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        if: inputs.db_migration_project_path != ''
         with:
-          efcore-project-path: ${{ needs.determine_deployment_stages.outputs.db_migration_project_path }}
-          environment-name: 'test'
-          backup-required: false
+          dotnet-version: ${{ inputs.dotnet_version }}
+
+      - name: Install SQLCMD Tools
+        if: inputs.db_migration_project_path != ''
+        shell: bash
+        run: |
+          echo "Attempting to install mssql-tools..."
+          # Add Microsoft SQL Server repository
+          curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
+          curl https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
+          sudo apt-get update
+          # Install SQL Server tools
+          sudo ACCEPT_EULA=Y apt-get install -y mssql-tools unixodbc-dev
+          echo "/opt/mssql-tools/bin" >> $GITHUB_PATH
+          sqlcmd -? || (echo "::error::sqlcmd not found after attempting install" && exit 1)
+
+      - name: 'TEST: Apply Database Migration Script'
+        if: inputs.db_migration_project_path != ''
+        shell: bash
+        run: |
+          echo "Applying migration script test_migration_script.sql"
+          sqlcmd -S ${{ vars.TEST_DB_SERVER }} -d ${{ vars.TEST_DB_NAME }} -U ${{ vars.TEST_DB_USER }} -P "${{ secrets.TEST_DB_PASSWORD }}" -i test_migration_script.sql -b -C
         env:
-          DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
+          SQL_PASSWORD: ${{ secrets.TEST_DB_PASSWORD }}
 
       - name: 'TEST: Deploy Application'
         id: deploy_app
@@ -356,8 +513,11 @@ jobs:
   # --- PROD Stage as a single job ---
   deploy_to_prod:
     name: 'Deploy to PROD Environment'
-    needs: [determine_deployment_stages, deploy_to_test]
-    if: needs.determine_deployment_stages.outputs.deploy_prod == 'true' && needs.deploy_to_test.result == 'success'
+    needs: [determine_deployment_stages, plan_to_prod, deploy_to_test]
+    if: >
+      needs.determine_deployment_stages.outputs.deploy_prod == 'true' &&
+      needs.plan_to_prod.result == 'success' &&
+      needs.deploy_to_test.result == 'success'
     runs-on: ubuntu-latest
     outputs:
       canary_status: ${{ steps.canary_deployment.outputs.canary_status }}
@@ -365,28 +525,64 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Download PROD Terraform Plan
+        if: inputs.terraform_directory != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: prod-terraform-plan
+          path: ${{ inputs.terraform_directory }}
+
+      - name: Download PROD Migration Script
+        if: inputs.db_migration_project_path != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: prod-migration-script
+          path: . # Download to workspace root
+
       - name: 'PROD: Apply Infrastructure (Terraform)'
+        if: inputs.terraform_directory != ''
         uses: InwardEcho/workflow-templates/.github/actions/composite-terraform-iac@main
         with:
-          working-directory: './Infra/prod'
+          working-directory: ${{ inputs.terraform_directory }}
           terraform-command: 'apply'
           environment-name: 'prod'
           var-file: 'terraform.prod.tfvars'
-          apply-auto-approve: false
+          apply-auto-approve: false # Or true, as per current logic
+          plan-output-file: 'prod.tfplan' # Use downloaded plan
         env:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
 
-      - name: 'PROD: Apply Database Migrations'
-        uses: InwardEcho/workflow-templates/.github/actions/composite-efcore-migration@main
+      - name: Setup .NET SDK
+        uses: actions/setup-dotnet@v4
+        if: inputs.db_migration_project_path != ''
         with:
-          efcore-project-path: ${{ needs.determine_deployment_stages.outputs.db_migration_project_path }}
-          environment-name: 'prod'
-          backup-required: true
+          dotnet-version: ${{ inputs.dotnet_version }}
+
+      - name: Install SQLCMD Tools
+        if: inputs.db_migration_project_path != ''
+        shell: bash
+        run: |
+          echo "Attempting to install mssql-tools..."
+          # Add Microsoft SQL Server repository
+          curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
+          curl https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
+          sudo apt-get update
+          # Install SQL Server tools
+          sudo ACCEPT_EULA=Y apt-get install -y mssql-tools unixodbc-dev
+          echo "/opt/mssql-tools/bin" >> $GITHUB_PATH
+          sqlcmd -? || (echo "::error::sqlcmd not found after attempting install" && exit 1)
+
+      - name: 'PROD: Apply Database Migration Script'
+        if: inputs.db_migration_project_path != ''
+        shell: bash
+        run: |
+          echo "Applying migration script prod_migration_script.sql"
+          sqlcmd -S ${{ vars.PROD_DB_SERVER }} -d ${{ vars.PROD_DB_NAME }} -U ${{ vars.PROD_DB_USER }} -P "${{ secrets.PROD_DB_PASSWORD }}" -i prod_migration_script.sql -b -C
         env:
-          DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
+          SQL_PASSWORD: ${{ secrets.PROD_DB_PASSWORD }}
 
       - name: 'PROD: Deploy Application'
         id: deploy_app
