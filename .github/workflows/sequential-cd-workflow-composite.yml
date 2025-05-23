@@ -152,12 +152,14 @@ jobs:
 
       - name: Install EF Core Tools
         shell: bash
+        if: inputs.db_migration_project_path != ''
         run: |
           dotnet tool install --global dotnet-ef
           echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
 
       - name: 'DEV: Generate Database Migration Script'
         shell: bash
+        if: inputs.db_migration_project_path != ''
         run: dotnet ef migrations script -o dev_migration_script.sql --project ${{ inputs.db_migration_project_path }} --idempotent
         env:
           DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
