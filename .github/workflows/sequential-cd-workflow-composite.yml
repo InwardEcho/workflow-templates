@@ -20,6 +20,10 @@ on:
         description: 'Defines the sequence of environments to deploy to. Options: dev, test, dev-then-test, dev-then-test-then-prod, test-then-prod.'
         required: true
         type: string
+      azure_app_name:
+        description: 'Azure App Service name (without environment suffix)'
+        required: false
+        type: string
       db_migration_project_path:
         description: 'DB migration project path'
         required: false
@@ -388,12 +392,13 @@ jobs:
       - name: 'DEV: Deploy Application'
         id: deploy_app
         uses: InwardEcho/workflow-templates/.github/actions/composite-deploy-environment@main
+        if: inputs.azure_app_name != ''
         with:
           environment-name: 'dev'
           artifact-path: ${{ needs.determine_deployment_stages.outputs.artifact_name }}
           deployment-target-type: 'azure-app-service'
           version-being-deployed: ${{ needs.determine_deployment_stages.outputs.version }}
-          azure-app-name: ${{ vars.azure_app_name }}-dev
+          azure-app-name: ${{ inputs.azure_app_name }}-dev
         env:
           AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS_APP_SERVICE }}
 
@@ -487,13 +492,14 @@ jobs:
 
       - name: 'TEST: Deploy Application'
         id: deploy_app
+        if: inputs.azure_app_name != ''
         uses: InwardEcho/workflow-templates/.github/actions/composite-deploy-environment@main
         with:
           environment-name: 'test'
           artifact-path: ${{ needs.determine_deployment_stages.outputs.artifact_name }}
           deployment-target-type: 'azure-app-service'
           version-being-deployed: ${{ needs.determine_deployment_stages.outputs.version }}
-          azure-app-name: ${{ vars.TEST_AZURE_APP_NAME }}
+          azure-app-name: ${{ inputs.azure_app_name }}-test
         env:
           AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS_APP_SERVICE }}
 
@@ -586,13 +592,14 @@ jobs:
 
       - name: 'PROD: Deploy Application'
         id: deploy_app
+        if: inputs.azure_app_name != ''
         uses: InwardEcho/workflow-templates/.github/actions/composite-deploy-environment@main
         with:
           environment-name: 'prod'
           artifact-path: ${{ needs.determine_deployment_stages.outputs.artifact_name }}
           deployment-target-type: 'azure-app-service'
           version-being-deployed: ${{ needs.determine_deployment_stages.outputs.version }}
-          azure-app-name: ${{ vars.PROD_AZURE_APP_NAME }}
+          azure-app-name: ${{ inputs.azure_app_name }}-prod
         env:
           AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS_APP_SERVICE }}
 
