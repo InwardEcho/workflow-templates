@@ -22,7 +22,7 @@ on:
         type: string
       db_migration_project_path:
         description: 'DB migration project path'
-        required: true
+        required: false
         type: string
       terraform_directory:
         description: 'Terraform directory path'
@@ -147,6 +147,7 @@ jobs:
 
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
+        if: inputs.db_migration_project_path != ''
         with:
           dotnet-version: ${{ inputs.dotnet_version }}
 
@@ -165,6 +166,7 @@ jobs:
           DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
 
       - name: 'DEV: Generate Infrastructure Plan'
+        if: inputs.terraform_directory != ''
         uses: InwardEcho/workflow-templates/.github/actions/composite-terraform-iac@main
         with:
           working-directory: ${{ inputs.terraform_directory }}
@@ -179,6 +181,7 @@ jobs:
           AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
 
       - name: Upload DEV Terraform Plan
+        if: inputs.terraform_directory != ''
         uses: actions/upload-artifact@v4
         with:
           name: dev-terraform-plan
@@ -186,11 +189,13 @@ jobs:
           retention-days: 3
 
       - name: Upload DEV Migration Script
+        if: inputs.db_migration_project_path != ''
         uses: actions/upload-artifact@v4
         with:
           name: dev-migration-script
           path: dev_migration_script.sql
           retention-days: 3
+
   # --- DEV Stage as a single job ---
   deploy_to_dev:
     name: 'Deploy to DEV Environment'
@@ -202,12 +207,14 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Download DEV Terraform Plan
+        if: inputs.terraform_directory != ''
         uses: actions/download-artifact@v4
         with:
           name: dev-terraform-plan
           path: ${{ inputs.terraform_directory }}
 
       - name: Download DEV Migration Script
+        if: inputs.db_migration_project_path != ''
         uses: actions/download-artifact@v4
         with:
           name: dev-migration-script
@@ -215,6 +222,7 @@ jobs:
 
       - name: Setup .NET SDK
         uses: actions/setup-dotnet@v4
+        if: inputs.db_migration_project_path != ''
         with:
           dotnet-version: ${{ inputs.dotnet_version }}
 
