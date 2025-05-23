@@ -9,8 +9,8 @@ inputs:
   efcore-project-path:
     description: 'Path to the .csproj file containing EF Core DbContext and migrations.'
     required: true
-  environment:
-    description: 'Target environment name (e.g., dev, test, prod).'
+  environment-name:
+    description: 'Target environment-name name (e.g., dev, test, prod).'
     required: true
   backup-required:
     description: 'Whether a database backup should be attempted before migration.'
@@ -67,7 +67,7 @@ runs:
       if: inputs.backup-required == 'true'
       shell: bash
       run: |
-        echo "Attempting database backup for environment: ${{ inputs.environment }}"
+        echo "Attempting database backup for environment-name: ${{ inputs.environment-name }}"
         if [[ -n "${{ inputs.backup-script-path }}" && -f "${{ inputs.backup-script-path }}" ]]; then
           echo "Running custom backup script: ${{ inputs.backup-script-path }}"
           # Ensure the script is executable
@@ -82,7 +82,7 @@ runs:
           echo "Generic backup logic would go here. Simulating successful backup for now."
         fi
       env:
-        # The script should use this environment variable
+        # The script should use this environment-name variable
         DB_CONNECTION_STRING_FOR_BACKUP: ${{ env.DB_CONNECTION_STRING_CALLER }}
       continue-on-error: false # Backup failure should stop the process if backup is required
 
@@ -92,13 +92,13 @@ runs:
       if: (inputs.backup-required == 'false') || (inputs.backup-required == 'true' && steps.backup_database.outcome == 'success')
       shell: bash
       run: |
-        echo "Applying EF Core migrations to ${{ inputs.environment }} database..."
+        echo "Applying EF Core migrations to ${{ inputs.environment-name }} database..."
         echo "Project path: ${{ inputs.efcore-project-path }}"
         # Using timeout command to limit execution time
         timeout ${{ inputs.migration-timeout }} dotnet ef database update --project "${{ inputs.efcore-project-path }}" --verbose
       env:
-        # EF Core CLI typically picks up connection strings from appsettings.json or environment variables.
-        # This sets an environment variable that ASP.NET Core configuration system can use.
+        # EF Core CLI typically picks up connection strings from appsettings.json or environment-name variables.
+        # This sets an environment-name variable that ASP.NET Core configuration system can use.
         # Adjust the key 'DefaultConnection' if your app uses a different one.
         ConnectionStrings__DefaultConnection: ${{ env.DB_CONNECTION_STRING_CALLER }}
       continue-on-error: false # Migration failure should stop the process
