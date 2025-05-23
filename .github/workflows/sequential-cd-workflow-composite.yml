@@ -158,7 +158,7 @@ jobs:
 
       - name: 'DEV: Generate Database Migration Script'
         shell: bash
-        run: dotnet ef migrations script -o dev_migration_script.sql --project ${{ needs.determine_deployment_stages.outputs.db_migration_project_path }} --idempotent
+        run: dotnet ef migrations script -o dev_migration_script.sql --project ${{ inputs.db_migration_project_path }} --idempotent
         env:
           DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
 
