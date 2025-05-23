@@ -88,11 +88,11 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          SOURCE_RUN_ID: ${{ github.event.inputs.source_run_id }}
         run: |
           ARTIFACT_NAME="${{ github.event.inputs.source_artifact_name }}"
           DEPLOYMENT_SCOPE="${{ github.event.inputs.deployment_scope }}"
-          
+          SOURCE_RUN_ID="${{ github.event.inputs.source_run_id }}"
+
           DEPLOY_DEV="false"
           DEPLOY_TEST="false"
           DEPLOY_PROD="false"
@@ -103,7 +103,7 @@ jobs:
           fi
 
           echo "Deployment Scope: $DEPLOYMENT_SCOPE"
-          echo "Version: $VERSION"
+          echo "Source Run ID: $SOURCE_RUN_ID"
           echo "Artifact: $ARTIFACT_NAME"
           echo "Is Main Pipeline: $IS_MAIN_PIPELINE"
 
