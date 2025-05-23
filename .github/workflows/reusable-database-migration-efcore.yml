@@ -11,15 +11,15 @@ on:
         description: 'Path to the .csproj file containing the EF Core DbContext and migrations.'
         required: true
         type: string
-      environment: # For logging and context, not directly used by EF Core CLI unless for conditional logic
-        description: 'Target environment name (e.g., dev, test, prod).'
+      environment-name: # For logging and context, not directly used by EF Core CLI unless for conditional logic
+        description: 'Target environment-name name (e.g., dev, test, prod).'
         required: true
         type: string
       backup-required:
         description: 'Whether a database backup should be attempted before migration.'
         required: false
         type: boolean
-        default: false # Default to false; enable for prod or sensitive environments
+        default: false # Default to false; enable for prod or sensitive environment-names
       backup-script-path:
         description: 'Path to a custom database backup script. If empty, a placeholder/example is used.'
         required: false
@@ -48,8 +48,8 @@ on:
         value: ${{ jobs.migrate_database_job.outputs.migration_apply_step_status }}
 
     secrets:
-      DB_CONNECTION_STRING: # Caller maps its environment-specific secret to this
-        description: 'The database connection string for the target environment.'
+      DB_CONNECTION_STRING: # Caller maps its environment-name-specific secret to this
+        description: 'The database connection string for the target environment-name.'
         required: true
       # Secrets for backup storage if a generic script needs them
       # BACKUP_STORAGE_ACCOUNT_NAME:
@@ -61,7 +61,7 @@ on:
 
 jobs:
   migrate_database_job:
-    name: Apply EF Core Migrations for ${{ inputs.environment }}
+    name: Apply EF Core Migrations for ${{ inputs.environment-name }}
     runs-on: ubuntu-latest
     outputs:
       job_status: ${{ steps.set_final_status.outputs.status }}
@@ -97,7 +97,7 @@ jobs:
         id: backup_database
         if: inputs.backup-required == true
         run: |
-          echo "Attempting database backup for environment: ${{ inputs.environment }}"
+          echo "Attempting database backup for environment-name: ${{ inputs.environment-name }}"
           if [[ -n "${{ inputs.backup-script-path }}" && -f "${{ inputs.backup-script-path }}" ]]; then
             echo "Running custom backup script: ${{ inputs.backup-script-path }}"
             # Ensure the script is executable: chmod +x ${{ inputs.backup-script-path }}
@@ -117,7 +117,7 @@ jobs:
         id: apply_migrations
         if: (inputs.backup-required == false) || (inputs.backup-required == true && steps.backup_database.outcome == 'success')
         run: |
-          echo "Applying EF Core migrations to ${{ inputs.environment }} database..."
+          echo "Applying EF Core migrations to ${{ inputs.environment-name }} database..."
           echo "Project path: ${{ inputs.efcore-project-path }}"
           timeout ${{ inputs.migration-timeout }} dotnet ef database update --project "${{ inputs.efcore-project-path }}" --verbose
         env:

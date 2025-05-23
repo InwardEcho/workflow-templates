@@ -19,6 +19,11 @@ on:
         description: 'Logical environment to deploy to'
         required: true
         type: string
+      db_migration_project_path:
+        description: 'DB migration project path'
+        required: true
+        type: string
+      
 
 permissions:
   contents: read      # To checkout code
@@ -111,7 +116,7 @@ jobs:
       terraform-command: 'apply'
       environment: ${{ github.event.inputs.target_environment_type }} # This is an input to the reusable workflow
       var-file: 'terraform.${{ github.event.inputs.target_environment_type }}.tfvars'
-      apply-auto-approve: ${{ github.event.inputs.target_environment_type == 'prod' && 'false' || 'true' }}
+      apply-auto-approve: ${{ github.event.inputs.target_environment_type == 'dev' }}
     secrets:
       AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
@@ -122,11 +127,11 @@ jobs:
     name: Apply Database Migrations via Reusable Workflow
     uses: ./.github/workflows/reusable-database-migration-efcore.yml
     needs: [prepare_deployment_info, call_terraform_apply]
-    if: needs.call_terraform_apply.outputs.status == 'success' # Assumes reusable-iac-terraform.yml outputs 'status'
+    if: needs.call_terraform_apply.outputs.status == 'success'
     with:
-      efcore-project-path: 'src/MyProject.DataAccess/MyProject.DataAccess.csproj' # Example, adjust to your project
+      efcore-project-path: ${{ github.event.inputs.db_migration_project_path }}
       environment: ${{ github.event.inputs.target_environment_type }} # This is an input to the reusable workflow
-      backup-required: ${{ github.event.inputs.target_environment_type == 'prod' && 'true' || 'false' }}
+      backup-required: ${{ github.event.inputs.target_environment_type == 'prod' }}
     secrets:
       DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }} # Scoped per GitHub Environment
 
@@ -137,29 +142,30 @@ jobs:
     if: needs.call_db_migration.outputs.status == 'success' && github.event.inputs.target_environment_type == 'prod'
     with:
       environment-name: 'prod' # Base name for canary slice identification
-      source_artifact_name: ${{ needs.prepare_deployment_info.outputs.artifact_name }}
+      artifact-path: ${{ needs.prepare_deployment_info.outputs.artifact_name }} # NOTE: This should be a path to a DOWNLOADED artifact
       version: ${{ needs.prepare_deployment_info.outputs.version }}
       canary-percentage: ${{ vars.PROD_CANARY_PERCENTAGE || 10 }}
       observation-period-minutes: ${{ vars.PROD_CANARY_OBSERVATION_MINUTES || 30 }}
-      health-check-url-pattern: ${{ vars.PROD_CANARY_HEALTH_CHECK_URL_PATTERN }}
-      primary-deployment-target-type: 'azure-app-service'
+      health-check-url-canary: ${{ vars.PROD_CANARY_HEALTH_CHECK_URL_PATTERN }} # Assuming this var holds the direct canary health check URL
+      deployment-target-type: 'azure-app-service' # Corrected parameter name
+      azure-app-name: ${{ vars[needs.prepare_deployment_info.outputs.azure_app_name_var_name] }} # Added required input for azure-app-service target
       rollback-on-failure: true
     secrets:
-      AZURE_CREDENTIALS_APP_SERVICE: ${{ secrets.AZURE_CREDENTIALS_APP_SERVICE }}
+      AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS_APP_SERVICE }} # Corrected secret name
 
   call_app_deploy_non_prod:
     name: Deploy Application to DEV/TEST (Direct) via Reusable Workflow
     uses: ./.github/workflows/reusable-deploy-environment.yml
     needs: [prepare_deployment_info, call_db_migration]
-    if: needs.call_db_migration.outputs.status == 'success' && (github.event.inputs.target_environment_type == 'dev' || github.event.inputs.target_environment_type == 'test')
+    if: needs.call_db_migration.outputs.status == 'success' && github.event.inputs.target_environment_type != 'prod'
     with:
       environment-name: ${{ github.event.inputs.target_environment_type }}
-      source_artifact_name: ${{ needs.prepare_deployment_info.outputs.artifact_name }}
+      artifact-path: ${{ needs.prepare_deployment_info.outputs.artifact_name }} # NOTE: This should be a path to a DOWNLOADED artifact
       deployment-target-type: 'azure-app-service'
       version-being-deployed: ${{ needs.prepare_deployment_info.outputs.version }}
       azure-app-name: ${{ vars[needs.prepare_deployment_info.outputs.azure_app_name_var_name] }}
     secrets:
-      AZURE_CREDENTIALS_APP_SERVICE: ${{ secrets.AZURE_CREDENTIALS_APP_SERVICE }}
+      AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS_APP_SERVICE }} # Corrected secret name
 
   trigger_next_stage:
     name: Trigger Next Stage Deployment
@@ -183,7 +189,7 @@ jobs:
               "version_to_deploy": "${{ needs.prepare_deployment_info.outputs.version }}",
               "source_artifact_name": "${{ needs.prepare_deployment_info.outputs.artifact_name }}",
               "target_environment_type": "test",
-              "source_branch_is_main": "false"
+              "db_migration_project_path": "${{ github.event.inputs.db_migration_project_path }}"
             }
           ref: ${{ github.ref }}
 
@@ -198,7 +204,7 @@ jobs:
               "version_to_deploy": "${{ needs.prepare_deployment_info.outputs.version }}",
               "source_artifact_name": "${{ needs.prepare_deployment_info.outputs.artifact_name }}",
               "target_environment_type": "prod",
-              "source_branch_is_main": "false"
+              "db_migration_project_path": "${{ github.event.inputs.db_migration_project_path }}"
             }
           ref: ${{ github.ref }}
 
@@ -244,11 +250,11 @@ jobs:
       - call_app_deploy_prod_canary
       - call_app_deploy_non_prod
       - get_canary_report_info
-    if: always()
+    if: always() && (github.secret_SLACK_WEBHOOK_URL != '')
     with:
       status: |
         ${{ ((github.event.inputs.target_environment_type == 'prod' && needs.call_app_deploy_prod_canary.result == 'success') ||
-             ((github.event.inputs.target_environment_type == 'dev' || github.event.inputs.target_environment_type == 'test') && needs.call_app_deploy_non_prod.result == 'success')) &&
+             (github.event.inputs.target_environment_type != 'prod' && needs.call_app_deploy_non_prod.result == 'success')) &&
              'success' || 'failure' }}
       workflow-name: "${{ github.workflow }} - ${{ github.event.inputs.target_environment_type }}"
       environment-name: ${{ needs.prepare_deployment_info.outputs.github_environment_name }}
@@ -256,9 +262,9 @@ jobs:
       run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       message-details: |
         Deployment to ${{ needs.prepare_deployment_info.outputs.github_environment_name }} status: ${{ 
-          ( (github.event.inputs.target_environment_type == 'prod' && needs.call_app_deploy_prod_canary.result == 'success') ||
-            ((github.event.inputs.target_environment_type == 'dev' || github.event.inputs.target_environment_type == 'test') && needs.call_app_deploy_non_prod.result == 'success') ) &&
-            'success' || 'failure' 
+          ((github.event.inputs.target_environment_type == 'prod' && needs.call_app_deploy_prod_canary.result == 'success') ||
+             (github.event.inputs.target_environment_type != 'prod' && needs.call_app_deploy_non_prod.result == 'success')) &&
+             'success' || 'failure'
         }}. ${{ 
           (github.event.inputs.target_environment_type == 'prod' && needs.get_canary_report_info.outputs.canary_message) 
           || 'Canary deployment not applicable for this environment.' 

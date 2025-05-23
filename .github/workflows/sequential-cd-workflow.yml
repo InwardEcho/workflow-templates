@@ -1,0 +1,331 @@
+# Sequential Continuous Deployment Workflow (Refactored: Job-per-Reusable-Workflow)
+# Purpose: Allows deployment to DEV, TEST, and PROD environments sequentially within a single workflow run,
+# based on a user-selected deployment scope. Each reusable workflow is called in its own job.
+# Leverages GitHub Environments for secrets, approvals, and environment-specific configurations.
+
+name: Sequential CD Workflow - Job per Call
+
+on:
+  workflow_call:
+    inputs:
+      version_to_deploy:
+        description: 'Version to deploy (e.g., 1.2.3 or 1.2.3-feature-xyz.5)'
+        required: true
+        type: string
+      source_artifact_name:
+        description: 'Name of the build artifact to download (e.g., release-1.2.3-app-package)'
+        required: true
+        type: string
+      deployment_scope:
+        description: 'Defines the sequence of environments to deploy to. Options: dev, test, dev-then-test, dev-then-test-then-prod, test-then-prod.'
+        required: true
+        type: string
+      db_migration_project_path:
+        description: 'DB migration project path'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write      # For OIDC with cloud providers
+
+concurrency:
+  group: sequential-cd-job-per-call-${{ github.event.inputs.deployment_scope }}-${{ github.event.inputs.version_to_deploy }}
+  cancel-in-progress: false
+
+env:
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  determine_deployment_stages:
+    name: Determine Deployment Stages
+    runs-on: ubuntu-latest
+    outputs:
+      deploy_dev: ${{ steps.evaluate_scope.outputs.deploy_dev }}
+      deploy_test: ${{ steps.evaluate_scope.outputs.deploy_test }}
+      deploy_prod: ${{ steps.evaluate_scope.outputs.deploy_prod }}
+      is_main_pipeline: ${{ steps.evaluate_scope.outputs.is_main_pipeline }}
+      version: ${{ github.event.inputs.version_to_deploy }}
+      artifact_name: ${{ github.event.inputs.source_artifact_name }}
+      db_migration_project_path: ${{ github.event.inputs.db_migration_project_path }}
+    steps:
+      - name: Evaluate Deployment Scope
+        id: evaluate_scope
+        shell: bash
+        run: |
+          VERSION="${{ github.event.inputs.version_to_deploy }}"
+          ARTIFACT_NAME="${{ github.event.inputs.source_artifact_name }}"
+          DEPLOYMENT_SCOPE="${{ github.event.inputs.deployment_scope }}"
+          
+          DEPLOY_DEV="false"
+          DEPLOY_TEST="false"
+          DEPLOY_PROD="false"
+
+          IS_MAIN_PIPELINE="false"
+          if [[ "$ARTIFACT_NAME" == release-* ]]; then
+            IS_MAIN_PIPELINE="true"
+          fi
+
+          echo "Deployment Scope: $DEPLOYMENT_SCOPE"
+          echo "Version: $VERSION"
+          echo "Artifact: $ARTIFACT_NAME"
+          echo "Is Main Pipeline: $IS_MAIN_PIPELINE"
+
+          case "$DEPLOYMENT_SCOPE" in
+            dev)
+              DEPLOY_DEV="true"
+              ;;
+            test)
+              DEPLOY_TEST="true"
+              ;;
+            dev-then-test)
+              DEPLOY_DEV="true"
+              DEPLOY_TEST="true"
+              ;;
+            dev-then-test-then-prod)
+              DEPLOY_DEV="true"
+              DEPLOY_TEST="true"
+              DEPLOY_PROD="true"
+              ;;
+            test-then-prod)
+              DEPLOY_TEST="true"
+              DEPLOY_PROD="true"
+              ;;
+            *)
+              echo "::error::Invalid deployment_scope: $DEPLOYMENT_SCOPE"
+              exit 1
+              ;;
+          esac
+
+          echo "deploy_dev=$DEPLOY_DEV" >> $GITHUB_OUTPUT
+          echo "deploy_test=$DEPLOY_TEST" >> $GITHUB_OUTPUT
+          echo "deploy_prod=$DEPLOY_PROD" >> $GITHUB_OUTPUT
+          echo "is_main_pipeline=$IS_MAIN_PIPELINE" >> $GITHUB_OUTPUT
+
+          echo "Will deploy to DEV: $DEPLOY_DEV"
+          echo "Will deploy to TEST: $DEPLOY_TEST"
+          echo "Will deploy to PROD: $DEPLOY_PROD"
+
+  # --- DEV Stage Jobs ---
+  dev_terraform_apply:
+    name: 'DEV: Apply Infrastructure (Terraform)'
+    needs: determine_deployment_stages
+    if: needs.determine_deployment_stages.outputs.deploy_dev == 'true'
+    uses: ./.github/workflows/reusable-iac-terraform.yml
+    with:
+      working-directory: './Infra/dev'
+      terraform-command: 'apply'
+      environment-name: 'dev'
+      var-file: 'terraform.dev.tfvars'
+      apply-auto-approve: true
+    secrets:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+
+  dev_db_migration:
+    name: 'DEV: Apply Database Migrations'
+    needs: [determine_deployment_stages, dev_terraform_apply]
+    if: needs.determine_deployment_stages.outputs.deploy_dev == 'true' && needs.dev_terraform_apply.result == 'success'
+    uses: ./.github/workflows/reusable-database-migration-efcore.yml
+    with:
+      efcore-project-path: ${{ needs.determine_deployment_stages.outputs.db_migration_project_path }}
+      environment-name: 'dev'
+      backup-required: false
+    secrets:
+      DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
+
+  dev_app_deploy:
+    name: 'DEV: Deploy Application (Direct)'
+    needs: [determine_deployment_stages, dev_db_migration]
+    if: needs.determine_deployment_stages.outputs.deploy_dev == 'true' && needs.dev_db_migration.result == 'success'
+    uses: ./.github/workflows/reusable-deploy-environment.yml
+    with:
+      environment-name: 'dev'
+      artifact-path: ${{ needs.determine_deployment_stages.outputs.artifact_name }}
+      deployment-target-type: 'azure-app-service'
+      version-being-deployed: ${{ needs.determine_deployment_stages.outputs.version }}
+      azure-app-name: ${{ vars.DEV_AZURE_APP_NAME }}
+    secrets:
+      AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS_APP_SERVICE }}
+
+  dev_observability:
+    name: 'DEV: Report Status'
+    needs: [determine_deployment_stages, dev_app_deploy]
+    if: always() && needs.determine_deployment_stages.outputs.deploy_dev == 'true'
+    uses: ./.github/workflows/reusable-observability-hooks.yml
+    # environment: Development # Optional: if SLACK_WEBHOOK_URL is scoped to GitHub env
+    with:
+      status: ${{ needs.dev_app_deploy.result }}
+      workflow-name: "${{ github.workflow }} - DEV Stage"
+      environment-name: 'Development' # Reporting on this environment
+      version-deployed: ${{ needs.determine_deployment_stages.outputs.version }}
+      run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      message-details: "Deployment to Development status: ${{ needs.dev_app_deploy.result }}."
+      notification-channel: 'slack'
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # --- TEST Stage Jobs ---
+  test_terraform_apply:
+    name: 'TEST: Apply Infrastructure (Terraform)'
+    needs: [determine_deployment_stages, dev_app_deploy] # Depends on dev completion if dev was run
+    if: >
+      needs.determine_deployment_stages.outputs.deploy_test == 'true' &&
+      (
+        needs.determine_deployment_stages.outputs.deploy_dev == 'false' ||
+        (needs.determine_deployment_stages.outputs.deploy_dev == 'true' && needs.dev_app_deploy.result == 'success')
+      )
+    uses: ./.github/workflows/reusable-iac-terraform.yml
+    with:
+      working-directory: './Infra/test'
+      terraform-command: 'apply'
+      environment-name: 'test'
+      var-file: 'terraform.test.tfvars'
+      apply-auto-approve: false
+    secrets:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+
+  test_db_migration:
+    name: 'TEST: Apply Database Migrations'
+    needs: [determine_deployment_stages, test_terraform_apply]
+    if: needs.determine_deployment_stages.outputs.deploy_test == 'true' && needs.test_terraform_apply.result == 'success'
+    uses: ./.github/workflows/reusable-database-migration-efcore.yml
+    with:
+      efcore-project-path: ${{ needs.determine_deployment_stages.outputs.db_migration_project_path }}
+      environment-name: 'test'
+      backup-required: false
+    secrets:
+      DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
+
+  test_app_deploy:
+    name: 'TEST: Deploy Application (Direct)'
+    needs: [determine_deployment_stages, test_db_migration]
+    if: needs.determine_deployment_stages.outputs.deploy_test == 'true' && needs.test_db_migration.result == 'success'
+    uses: ./.github/workflows/reusable-deploy-environment.yml
+    with:
+      environment-name: 'test'
+      artifact-path: ${{ needs.determine_deployment_stages.outputs.artifact_name }}
+      deployment-target-type: 'azure-app-service'
+      version-being-deployed: ${{ needs.determine_deployment_stages.outputs.version }}
+      azure-app-name: ${{ vars.TEST_AZURE_APP_NAME }}
+    secrets:
+      AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS_APP_SERVICE }}
+
+  test_observability:
+    name: 'TEST: Report Status'
+    needs: [determine_deployment_stages, test_app_deploy]
+    if: always() && needs.determine_deployment_stages.outputs.deploy_test == 'true'
+    uses: ./.github/workflows/reusable-observability-hooks.yml
+    # environment: Test
+    with:
+      status: ${{ needs.test_app_deploy.result }}
+      workflow-name: "${{ github.workflow }} - TEST Stage"
+      environment-name: 'Test'
+      version-deployed: ${{ needs.determine_deployment_stages.outputs.version }}
+      run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      message-details: "Deployment to Test status: ${{ needs.test_app_deploy.result }}."
+      notification-channel: 'slack'
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # --- PROD Stage Jobs ---
+  prod_terraform_apply:
+    name: 'PROD: Apply Infrastructure (Terraform)'
+    needs: [determine_deployment_stages, test_app_deploy] # Prod always depends on successful test
+    if: needs.determine_deployment_stages.outputs.deploy_prod == 'true' && needs.test_app_deploy.result == 'success'
+    uses: ./.github/workflows/reusable-iac-terraform.yml
+    with:
+      working-directory: './Infra/prod'
+      terraform-command: 'apply'
+      environment-name: 'prod'
+      var-file: 'terraform.prod.tfvars'
+      apply-auto-approve: false
+    secrets:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+
+  prod_db_migration:
+    name: 'PROD: Apply Database Migrations'
+    needs: [determine_deployment_stages, prod_terraform_apply]
+    if: needs.determine_deployment_stages.outputs.deploy_prod == 'true' && needs.prod_terraform_apply.result == 'success'
+    uses: ./.github/workflows/reusable-database-migration-efcore.yml
+    with:
+      efcore-project-path: ${{ needs.determine_deployment_stages.outputs.db_migration_project_path }}
+      environment-name: 'prod'
+      backup-required: true
+    secrets:
+      DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
+
+  prod_app_deploy: # This job's result and outputs are used by get_prod_canary_report_info
+    name: 'PROD: Deploy Application (Canary)'
+    needs: [determine_deployment_stages, prod_db_migration]
+    if: needs.determine_deployment_stages.outputs.deploy_prod == 'true' && needs.prod_db_migration.result == 'success'
+    # Outputs are inherited from the reusable workflow's last job. No 'outputs:' block needed here.
+    uses: ./.github/workflows/reusable-canary-deployment.yml
+    with:
+      environment-name: 'prod'
+      artifact-path: ${{ needs.determine_deployment_stages.outputs.artifact_name }}
+      version: ${{ needs.determine_deployment_stages.outputs.version }}
+      canary-percentage: ${{ vars.PROD_CANARY_PERCENTAGE || 10 }}
+      observation-period-minutes: ${{ vars.PROD_CANARY_OBSERVATION_MINUTES || 30 }}
+      health-check-url-canary: ${{ vars.PROD_CANARY_HEALTH_CHECK_URL_PATTERN }}
+      deployment-target-type: 'azure-app-service'
+      rollback-on-failure: true
+    secrets:
+      AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS_APP_SERVICE }}
+
+  get_prod_canary_report_info:
+    name: 'PROD: Get Canary Report Info'
+    runs-on: ubuntu-latest
+    needs: [determine_deployment_stages, prod_app_deploy]
+    if: always() && needs.determine_deployment_stages.outputs.deploy_prod == 'true'
+    outputs:
+      canary_message_text: ${{ steps.get_status.outputs.canary_message_text }}
+    steps:
+      - name: Determine Canary Status for Message
+        id: get_status
+        shell: bash
+        run: |
+          CANARY_MSG=""
+          PROD_CANARY_JOB_RESULT="${{ needs.prod_app_deploy.result }}"
+          # Assuming reusable-canary-deployment.yml's final job outputs 'canary_status'
+          PROD_CANARY_JOB_OUTPUT_STATUS="${{ needs.prod_app_deploy.outputs.canary_status }}" 
+
+          if [[ "$PROD_CANARY_JOB_RESULT" == "success" ]]; then
+            CANARY_MSG="Canary outcome: ${PROD_CANARY_JOB_OUTPUT_STATUS:-'Succeeded, status not reported from canary job'}"
+          elif [[ "$PROD_CANARY_JOB_RESULT" == "failure" ]]; then
+            CANARY_MSG="Canary outcome: ${PROD_CANARY_JOB_OUTPUT_STATUS:-'Failed, status not reported from canary job'}"
+          elif [[ "$PROD_CANARY_JOB_RESULT" == "skipped" ]]; then
+            CANARY_MSG="Canary deployment job was skipped."
+          elif [[ "$PROD_CANARY_JOB_RESULT" == "cancelled" ]]; then
+            CANARY_MSG="Canary deployment job was cancelled."
+          else
+            CANARY_MSG="Canary outcome: N/A (Prod canary job status: ${PROD_CANARY_JOB_RESULT:-'unknown'})"
+          fi
+          echo "Generated Canary Message for report: $CANARY_MSG"
+          echo "canary_message_text=$CANARY_MSG" >> $GITHUB_OUTPUT
+
+  prod_observability:
+    name: 'PROD: Report Status'
+    needs: [determine_deployment_stages, prod_app_deploy, get_prod_canary_report_info]
+    if: always() && needs.determine_deployment_stages.outputs.deploy_prod == 'true'
+    uses: ./.github/workflows/reusable-observability-hooks.yml
+    # environment: Production
+    with:
+      status: ${{ needs.prod_app_deploy.result }}
+      workflow-name: "${{ github.workflow }} - PROD Stage"
+      environment-name: 'Production'
+      version-deployed: ${{ needs.determine_deployment_stages.outputs.version }}
+      run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      message-details: "Deployment to Production status: ${{ needs.prod_app_deploy.result }}. ${{ needs.get_prod_canary_report_info.outputs.canary_message_text }}"
+      notification-channel: 'slack'
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

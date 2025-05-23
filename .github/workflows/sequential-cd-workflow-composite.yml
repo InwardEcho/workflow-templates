@@ -1,0 +1,334 @@
+# Sequential Continuous Deployment Workflow (Refactored: Composite Actions)
+# Purpose: Allows deployment to DEV, TEST, and PROD environments sequentially within a single workflow run,
+# based on a user-selected deployment scope. Each environment is deployed in a single job using composite actions.
+# Leverages GitHub Environments for secrets, approvals, and environment-specific configurations.
+
+name: Sequential CD Workflow - Composite Actions
+
+on:
+  workflow_call:
+    inputs:
+      version_to_deploy:
+        description: 'Version to deploy (e.g., 1.2.3 or 1.2.3-feature-xyz.5)'
+        required: true
+        type: string
+      source_artifact_name:
+        description: 'Name of the build artifact to download (e.g., release-1.2.3-app-package)'
+        required: true
+        type: string
+      deployment_scope:
+        description: 'Defines the sequence of environments to deploy to. Options: dev, test, dev-then-test, dev-then-test-then-prod, test-then-prod.'
+        required: true
+        type: string
+      db_migration_project_path:
+        description: 'DB migration project path'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write      # For OIDC with cloud providers
+
+concurrency:
+  group: sequential-cd-composite-${{ github.event.inputs.deployment_scope }}-${{ github.event.inputs.version_to_deploy }}
+  cancel-in-progress: false
+
+env:
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  determine_deployment_stages:
+    name: Determine Deployment Stages
+    runs-on: ubuntu-latest
+    outputs:
+      deploy_dev: ${{ steps.evaluate_scope.outputs.deploy_dev }}
+      deploy_test: ${{ steps.evaluate_scope.outputs.deploy_test }}
+      deploy_prod: ${{ steps.evaluate_scope.outputs.deploy_prod }}
+      is_main_pipeline: ${{ steps.evaluate_scope.outputs.is_main_pipeline }}
+      version: ${{ github.event.inputs.version_to_deploy }}
+      artifact_name: ${{ github.event.inputs.source_artifact_name }}
+      db_migration_project_path: ${{ github.event.inputs.db_migration_project_path }}
+    steps:
+      - name: Evaluate Deployment Scope
+        id: evaluate_scope
+        shell: bash
+        run: |
+          VERSION="${{ github.event.inputs.version_to_deploy }}"
+          ARTIFACT_NAME="${{ github.event.inputs.source_artifact_name }}"
+          DEPLOYMENT_SCOPE="${{ github.event.inputs.deployment_scope }}"
+          
+          DEPLOY_DEV="false"
+          DEPLOY_TEST="false"
+          DEPLOY_PROD="false"
+
+          IS_MAIN_PIPELINE="false"
+          if [[ "$ARTIFACT_NAME" == release-* ]]; then
+            IS_MAIN_PIPELINE="true"
+          fi
+
+          echo "Deployment Scope: $DEPLOYMENT_SCOPE"
+          echo "Version: $VERSION"
+          echo "Artifact: $ARTIFACT_NAME"
+          echo "Is Main Pipeline: $IS_MAIN_PIPELINE"
+
+          case "$DEPLOYMENT_SCOPE" in
+            dev)
+              DEPLOY_DEV="true"
+              ;;
+            test)
+              DEPLOY_TEST="true"
+              ;;
+            dev-then-test)
+              DEPLOY_DEV="true"
+              DEPLOY_TEST="true"
+              ;;
+            dev-then-test-then-prod)
+              DEPLOY_DEV="true"
+              DEPLOY_TEST="true"
+              DEPLOY_PROD="true"
+              ;;
+            test-then-prod)
+              DEPLOY_TEST="true"
+              DEPLOY_PROD="true"
+              ;;
+            *)
+              echo "::error::Invalid deployment_scope: $DEPLOYMENT_SCOPE"
+              exit 1
+              ;;
+          esac
+
+          echo "deploy_dev=$DEPLOY_DEV" >> $GITHUB_OUTPUT
+          echo "deploy_test=$DEPLOY_TEST" >> $GITHUB_OUTPUT
+          echo "deploy_prod=$DEPLOY_PROD" >> $GITHUB_OUTPUT
+          echo "is_main_pipeline=$IS_MAIN_PIPELINE" >> $GITHUB_OUTPUT
+
+          echo "Will deploy to DEV: $DEPLOY_DEV"
+          echo "Will deploy to TEST: $DEPLOY_TEST"
+          echo "Will deploy to PROD: $DEPLOY_PROD"
+
+  # --- DEV Stage as a single job ---
+  deploy_to_dev:
+    name: 'Deploy to DEV Environment'
+    needs: determine_deployment_stages
+    if: needs.determine_deployment_stages.outputs.deploy_dev == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: 'DEV: Apply Infrastructure (Terraform)'
+        uses: ./.github/actions/composite-terraform-iac
+        with:
+          working-directory: './Infra/dev'
+          terraform-command: 'apply'
+          environment-name: 'dev'
+          var-file: 'terraform.dev.tfvars'
+          apply-auto-approve: true
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+
+      - name: 'DEV: Apply Database Migrations'
+        uses: ./.github/actions/composite-efcore-migration
+        with:
+          efcore-project-path: ${{ needs.determine_deployment_stages.outputs.db_migration_project_path }}
+          environment-name: 'dev'
+          backup-required: false
+        env:
+          DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
+
+      - name: 'DEV: Deploy Application'
+        id: deploy_app
+        uses: ./.github/actions/composite-deploy-environment
+        with:
+          environment-name: 'dev'
+          artifact-path: ${{ needs.determine_deployment_stages.outputs.artifact_name }}
+          deployment-target-type: 'azure-app-service'
+          version-being-deployed: ${{ needs.determine_deployment_stages.outputs.version }}
+          azure-app-name: ${{ vars.DEV_AZURE_APP_NAME }}
+        env:
+          AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS_APP_SERVICE }}
+
+      - name: 'DEV: Report Status'
+        uses: ./.github/actions/composite-observability-hooks
+        with:
+          status: ${{ steps.deploy_app.outcome }}
+          workflow-name: "${{ github.workflow }} - DEV Stage"
+          environment-name: 'Development'
+          version-deployed: ${{ needs.determine_deployment_stages.outputs.version }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          message-details: "Deployment to Development status: ${{ steps.deploy_app.outcome }}."
+          notification-channel: 'slack'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # --- TEST Stage as a single job ---
+  deploy_to_test:
+    name: 'Deploy to TEST Environment'
+    needs: [determine_deployment_stages, deploy_to_dev]
+    if: >
+      needs.determine_deployment_stages.outputs.deploy_test == 'true' &&
+      (
+        needs.determine_deployment_stages.outputs.deploy_dev == 'false' ||
+        (needs.determine_deployment_stages.outputs.deploy_dev == 'true' && needs.deploy_to_dev.result == 'success')
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: 'TEST: Apply Infrastructure (Terraform)'
+        uses: ./.github/actions/composite-terraform-iac
+        with:
+          working-directory: './Infra/test'
+          terraform-command: 'apply'
+          environment-name: 'test'
+          var-file: 'terraform.test.tfvars'
+          apply-auto-approve: false
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+
+      - name: 'TEST: Apply Database Migrations'
+        uses: ./.github/actions/composite-efcore-migration
+        with:
+          efcore-project-path: ${{ needs.determine_deployment_stages.outputs.db_migration_project_path }}
+          environment-name: 'test'
+          backup-required: false
+        env:
+          DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
+
+      - name: 'TEST: Deploy Application'
+        id: deploy_app
+        uses: ./.github/actions/composite-deploy-environment
+        with:
+          environment-name: 'test'
+          artifact-path: ${{ needs.determine_deployment_stages.outputs.artifact_name }}
+          deployment-target-type: 'azure-app-service'
+          version-being-deployed: ${{ needs.determine_deployment_stages.outputs.version }}
+          azure-app-name: ${{ vars.TEST_AZURE_APP_NAME }}
+        env:
+          AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS_APP_SERVICE }}
+
+      - name: 'TEST: Report Status'
+        uses: ./.github/actions/composite-observability-hooks
+        with:
+          status: ${{ steps.deploy_app.outcome }}
+          workflow-name: "${{ github.workflow }} - TEST Stage"
+          environment-name: 'Test'
+          version-deployed: ${{ needs.determine_deployment_stages.outputs.version }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          message-details: "Deployment to Test status: ${{ steps.deploy_app.outcome }}."
+          notification-channel: 'slack'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # --- PROD Stage as a single job ---
+  deploy_to_prod:
+    name: 'Deploy to PROD Environment'
+    needs: [determine_deployment_stages, deploy_to_test]
+    if: needs.determine_deployment_stages.outputs.deploy_prod == 'true' && needs.deploy_to_test.result == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      canary_status: ${{ steps.canary_deployment.outputs.canary_status }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: 'PROD: Apply Infrastructure (Terraform)'
+        uses: ./.github/actions/composite-terraform-iac
+        with:
+          working-directory: './Infra/prod'
+          terraform-command: 'apply'
+          environment-name: 'prod'
+          var-file: 'terraform.prod.tfvars'
+          apply-auto-approve: false
+        env:
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+
+      - name: 'PROD: Apply Database Migrations'
+        uses: ./.github/actions/composite-efcore-migration
+        with:
+          efcore-project-path: ${{ needs.determine_deployment_stages.outputs.db_migration_project_path }}
+          environment-name: 'prod'
+          backup-required: true
+        env:
+          DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
+
+      # For PROD, we need to implement the canary deployment process
+      # This would typically involve multiple steps using the composite actions
+      - name: 'PROD: Deploy Canary Slice'
+        id: deploy_canary
+        uses: ./.github/actions/composite-deploy-canary-slice
+        with:
+          environment-name: 'prod'
+          artifact-path: ${{ needs.determine_deployment_stages.outputs.artifact_name }}
+          version: ${{ needs.determine_deployment_stages.outputs.version }}
+          canary-percentage: ${{ vars.PROD_CANARY_PERCENTAGE || 10 }}
+          deployment-target-type: 'azure-app-service'
+        env:
+          AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS_APP_SERVICE }}
+
+      - name: 'PROD: Monitor Canary'
+        id: monitor_canary
+        uses: ./.github/actions/composite-monitor-canary
+        with:
+          environment-name: 'prod'
+          health-check-url-canary: ${{ vars.PROD_CANARY_HEALTH_CHECK_URL_PATTERN }}
+          observation-period-minutes: ${{ vars.PROD_CANARY_OBSERVATION_MINUTES || 30 }}
+          version: ${{ needs.determine_deployment_stages.outputs.version }}
+
+      - name: 'PROD: Promote Canary'
+        id: promote_canary
+        if: steps.monitor_canary.outcome == 'success'
+        uses: ./.github/actions/composite-promote-canary
+        with:
+          environment-name: 'prod'
+          version: ${{ needs.determine_deployment_stages.outputs.version }}
+          deployment-target-type: 'azure-app-service'
+        env:
+          AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS_APP_SERVICE }}
+
+      - name: 'PROD: Rollback Canary'
+        id: rollback_canary
+        if: steps.monitor_canary.outcome == 'failure' && vars.PROD_CANARY_ROLLBACK_ON_FAILURE != 'false'
+        uses: ./.github/actions/composite-rollback-canary
+        with:
+          environment-name: 'prod'
+          deployment-target-type: 'azure-app-service'
+        env:
+          AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS_APP_SERVICE }}
+
+      - name: 'Set Canary Deployment Status'
+        id: canary_deployment
+        run: |
+          if [[ "${{ steps.monitor_canary.outcome }}" == "success" && "${{ steps.promote_canary.outcome }}" == "success" ]]; then
+            echo "canary_status=Succeeded and promoted to 100%" >> $GITHUB_OUTPUT
+          elif [[ "${{ steps.monitor_canary.outcome }}" == "failure" && "${{ steps.rollback_canary.outcome }}" == "success" ]]; then
+            echo "canary_status=Failed and rolled back" >> $GITHUB_OUTPUT
+          elif [[ "${{ steps.monitor_canary.outcome }}" == "failure" ]]; then
+            echo "canary_status=Failed" >> $GITHUB_OUTPUT
+          else
+            echo "canary_status=Unknown state" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 'PROD: Report Status'
+        uses: ./.github/actions/composite-observability-hooks
+        with:
+          status: ${{ steps.canary_deployment.outcome }}
+          workflow-name: "${{ github.workflow }} - PROD Stage"
+          environment-name: 'Production'
+          version-deployed: ${{ needs.determine_deployment_stages.outputs.version }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          message-details: "Deployment to Production status: ${{ steps.canary_deployment.outcome }}. Canary outcome: ${{ steps.canary_deployment.outputs.canary_status }}"
+          notification-channel: 'slack'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

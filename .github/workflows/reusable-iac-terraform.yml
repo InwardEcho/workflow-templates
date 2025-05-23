@@ -15,8 +15,8 @@ on:
         description: "Terraform command to execute ('init', 'validate', 'plan', 'apply', 'destroy')."
         required: true
         type: string
-      environment:
-        description: 'Target environment name (e.g., dev, test, prod). Used for workspace selection and var files.'
+      environment-name:
+        description: 'Target environment-name name (e.g., dev, test, prod). Used for workspace selection and var files.'
         required: true
         type: string
       plan-output-file:
@@ -28,12 +28,12 @@ on:
         description: 'Path to a backend configuration file (e.g., backend-dev.hcl or backend-dev.tfvars).'
         required: false
         type: string
-        default: '' # Example: backend-${{ inputs.environment }}.config
+        default: '' # Example: backend-${{ inputs.environment-name }}.config
       var-file:
-        description: 'Path to a specific .tfvars file for the environment (e.g., env-dev.tfvars).'
+        description: 'Path to a specific .tfvars file for the environment-name (e.g., env-dev.tfvars).'
         required: false
         type: string
-        default: '' # Example: terraform.${{ inputs.environment }}.tfvars
+        default: '' # Example: terraform.${{ inputs.environment-name }}.tfvars
       apply-auto-approve:
         description: 'Whether to auto-approve terraform apply. Should be false for production.'
         required: false
@@ -77,13 +77,13 @@ on:
 
 jobs:
   terraform_command_job:
-    name: Terraform ${{ inputs.terraform-command }} for ${{ inputs.environment }}
+    name: Terraform ${{ inputs.terraform-command }} for ${{ inputs.environment-name }}
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}
 
-    env: # Set environment variables for Terraform AzureRM provider (example)
+    env: # Set environment-name variables for Terraform AzureRM provider (example)
       ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
       ARM_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
       ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
@@ -119,7 +119,7 @@ jobs:
         id: workspace
         if: steps.init.outcome == 'success'
         run: |
-          terraform workspace select ${{ inputs.environment }} || terraform workspace new ${{ inputs.environment }}
+          terraform workspace select ${{ inputs.environment-name }} || terraform workspace new ${{ inputs.environment-name }}
         continue-on-error: false
 
       - name: Terraform Validate
