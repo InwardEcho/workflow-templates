@@ -37,6 +37,15 @@ on:
         description: 'The run ID of the CI workflow that produced the artifact'
         required: true
         type: string
+      terraform-vars:
+        description: 'JSON object of terraform variables'
+        required: false
+        type: string
+        default: '{}'
+      terraform-var-file:
+        description: 'Path to existing tfvars file'
+        required: false
+        type: string
     secrets:
       DB_CONNECTION_STRING:
         description: 'Database connection string for migrations'
@@ -194,7 +203,7 @@ jobs:
           working-directory: ${{ inputs.terraform_directory }}
           terraform-command: 'plan'
           environment-name: 'dev'
-          var-file: 'terraform.dev.tfvars' # Ensure this var-file is correct for dev plan
+          var-file: ${{ inputs.terraform-var-file }}
           plan-output-file: 'dev.tfplan'
         env:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}

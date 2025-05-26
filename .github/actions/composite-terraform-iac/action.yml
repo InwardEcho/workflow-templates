@@ -15,6 +15,10 @@ inputs:
   environment-name:
     description: 'Target environment-name name for workspace and var files.'
     required: true
+  terraform-vars:
+    description: 'JSON object of terraform variables'
+    required: false
+    default: '{}'
   plan-output-file:
     description: 'Filename for Terraform plan output.'
     required: false
@@ -116,6 +120,27 @@ runs:
         ARM_TENANT_ID: ${{ env.AZURE_TENANT_ID }}
       continue-on-error: true # Let set_final_status determine overall outcome
 
+    - name: Generate tfvars from inputs
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        # Parse JSON input and create tfvars file
+        TFVARS_FILE="generated.auto.tfvars"
+        
+        # Start with empty file
+        > "$TFVARS_FILE"
+        
+        # Add environment (always included)
+        echo "environment = \"${{ inputs.environment-name }}\"" >> "$TFVARS_FILE"
+        
+        # Parse JSON and add variables
+        if [[ "${{ inputs.terraform-vars }}" != "{}" ]]; then
+          echo '${{ inputs.terraform-vars }}' | jq -r 'to_entries[] | "\(.key) = \"\(.value)\""' >> "$TFVARS_FILE"
+        fi
+        
+        echo "Generated $TFVARS_FILE:"
+        cat "$TFVARS_FILE"      
+
     - name: Terraform Plan
       id: run_terraform_plan
       if: steps.workspace.outcome == 'success' && inputs.terraform-command == 'plan'
@@ -123,9 +148,15 @@ runs:
       working-directory: ${{ inputs.working-directory }}
       run: |
         PLAN_ARGS="-input=false -out=${{ inputs.plan-output-file }} -detailed-exitcode"
-        if [[ -n "${{ inputs.var-file }}" ]]; then
+        
+        # Always use generated tfvars
+        PLAN_ARGS="$PLAN_ARGS -var-file=generated.auto.tfvars"
+        
+        # Add user-provided var file if specified
+        if [[ -n "${{ inputs.var-file }}" && -f "${{ inputs.var-file }}" ]]; then
           PLAN_ARGS="$PLAN_ARGS -var-file=${{ inputs.var-file }}"
         fi
+        
         terraform plan $PLAN_ARGS
         PLAN_EXIT_CODE=$?
         echo "Terraform plan exit code: $PLAN_EXIT_CODE"
