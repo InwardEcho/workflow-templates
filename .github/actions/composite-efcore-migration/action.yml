@@ -82,14 +82,29 @@ runs:
       shell: bash
       run: |
         echo "Attempting to install mssql-tools..."
-        # Add Microsoft SQL Server repository
-        curl https://packages.microsoft.com/keys/microsoft.asc | sudo apt-key add -
-        curl https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/prod.list | sudo tee /etc/apt/sources.list.d/mssql-release.list
+        
+        # Clean up any existing Microsoft repositories to avoid duplicates
+        sudo rm -f /etc/apt/sources.list.d/mssql-release.list
+        sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list
+        
+        # Add Microsoft signing key (using the new recommended method)
+        curl -sSL https://packages.microsoft.com/keys/microsoft.asc | sudo tee /etc/apt/trusted.gpg.d/microsoft.asc
+        
+        # Use Ubuntu 22.04 repository (jammy) since 24.04 may not be supported yet
+        echo "deb [arch=amd64,arm64,armhf] https://packages.microsoft.com/ubuntu/22.04/prod jammy main" | sudo tee /etc/apt/sources.list.d/mssql-release.list
+        
+        # Update package list
         sudo apt-get update
+        
         # Install SQL Server tools
-        sudo ACCEPT_EULA=Y apt-get install -y mssql-tools unixodbc-dev
-        echo "/opt/mssql-tools/bin" >> $GITHUB_PATH
-        sqlcmd -? || (echo "::error::sqlcmd not found after attempting install" && exit 1)
+        sudo ACCEPT_EULA=Y apt-get install -y mssql-tools18 unixodbc-dev
+        
+        # Add to PATH
+        echo "/opt/mssql-tools18/bin" >> $GITHUB_PATH
+        
+        # Verify installation
+        /opt/mssql-tools18/bin/sqlcmd -? || (echo "::error::sqlcmd not found after installation" && exit 1)
+
 
     - name: Backup Database (Optional)
       id: backup_database
