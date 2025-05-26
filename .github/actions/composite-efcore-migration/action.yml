@@ -142,55 +142,139 @@ runs:
         
         # Use Python with proper parsing
         python3 << 'EOF'
-        import urllib.parse
+        import os
+        import re
         import subprocess
         import sys
-        import os
 
-        conn_str = os.environ.get('DB_CONNECTION_STRING', '')
+        def parse_connection_string(conn_str):
+            """Parse .NET style connection string into components."""
+            if not conn_str:
+                return None
+            
+            # Debug: Print the connection string (first 50 chars for security)
+            print(f"Connection string preview: {conn_str[:50]}...")
+            print(f"Connection string length: {len(conn_str)}")
+            
+            # Split by semicolon and parse key=value pairs
+            params = {}
+            for part in conn_str.split(';'):
+                part = part.strip()
+                if '=' in part and part:
+                    key, value = part.split('=', 1)
+                    params[key.strip().lower()] = value.strip()
+            
+            # Debug: Print all parsed parameters
+            print("Parsed parameters:")
+            for key, value in params.items():
+                if 'password' in key.lower():
+                    print(f"  {key}: {'*' * len(value)}")
+                else:
+                    print(f"  {key}: {value}")
+            
+            # Extract server (handle tcp: prefix and port)
+            server = None
+            for key in ['server', 'data source', 'datasource']:
+                if key in params:
+                    server = params[key]
+                    break
+            
+            if server and server.startswith('tcp:'):
+                server = server[4:]  # Remove 'tcp:' prefix
+            
+            # Extract database
+            database = None
+            for key in ['initial catalog', 'database']:
+                if key in params:
+                    database = params[key]
+                    break
+            
+            # Extract user
+            user = None
+            for key in ['user id', 'uid', 'userid', 'username']:
+                if key in params:
+                    user = params[key]
+                    break
+            
+            # Extract password
+            password = None
+            for key in ['password', 'pwd']:
+                if key in params:
+                    password = params[key]
+                    break
+            
+            print(f"Final parsed values:")
+            print(f"  Server: '{server}'")
+            print(f"  Database: '{database}'")
+            print(f"  User: '{user}'")
+            print(f"  Password: {'Set' if password else 'Not set'}")
+            
+            return {
+                'server': server,
+                'database': database,
+                'user': user,
+                'password': password
+            }
 
-        # Parse connection string properly
-        # Split by semicolon and create dict
-        params = {}
-        for pair in conn_str.split(';'):
-            if '=' in pair and pair.strip():
-                key, value = pair.split('=', 1)
-                params[key.strip()] = value.strip()
+        # Get environment variables
+        connection_string = os.environ.get('DB_CONNECTION_STRING', '')
+        script_path = os.environ.get('SCRIPT_PATH', '')
 
-        # Extract with proper key mapping
-        server_key = next((k for k in params.keys() if k.lower() in ['server', 'data source']), None)
-        db_key = next((k for k in params.keys() if k.lower() in ['initial catalog', 'database']), None)
-        user_key = next((k for k in params.keys() if k.lower() in ['user id', 'uid']), None)
-        pwd_key = next((k for k in params.keys() if k.lower() in ['password', 'pwd']), None)
+        print(f"Script path: {script_path}")
 
-        if not all([server_key, db_key, user_key, pwd_key]):
-            print("Error: Could not find required connection string parameters")
+        if not connection_string:
+            print("Error: DB_CONNECTION_STRING environment variable is empty")
             sys.exit(1)
 
-        server = params[server_key].replace('tcp:', '').split(',')[0]  # Remove tcp: and port
-        database = params[db_key]
-        user = params[user_key]
-        password = params[pwd_key]
+        if not script_path:
+            print("Error: SCRIPT_PATH environment variable is empty")
+            sys.exit(1)
 
-        print(f"Applying SQL migration script to {database} on {server}")
+        # Parse connection string
+        conn_params = parse_connection_string(connection_string)
 
-        # Run sqlcmd
+        if not conn_params:
+            print("Error: Failed to parse connection string")
+            sys.exit(1)
+
+        # Validate required parameters
+        missing = []
+        if not conn_params['server']:
+            missing.append('server')
+        if not conn_params['database']:
+            missing.append('database')
+        if not conn_params['user']:
+            missing.append('user')
+        if not conn_params['password']:
+            missing.append('password')
+
+        if missing:
+            print(f"Error: Could not find required connection string parameters: {', '.join(missing)}")
+            sys.exit(1)
+
+        # Build sqlcmd command
         cmd = [
             'sqlcmd',
-            '-S', server,
-            '-d', database, 
-            '-U', user,
-            '-P', password,
-            '-i', os.environ.get('MIGRATION_SCRIPT_PATH', ''),
-            '-b', '-C'
+            '-S', conn_params['server'],
+            '-d', conn_params['database'],
+            '-U', conn_params['user'],
+            '-P', conn_params['password'],
+            '-i', script_path,
+            '-b',
+            '-C'
         ]
 
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        print(result.stdout)
-        if result.stderr:
-            print(result.stderr, file=sys.stderr)
-            
-        sys.exit(result.returncode)
+        print(f"Executing: sqlcmd -S {conn_params['server']} -d {conn_params['database']} -U {conn_params['user']} -P *** -i {script_path} -b -C")
+
+        try:
+            result = subprocess.run(cmd, check=True, capture_output=False)
+            print("SQL script executed successfully")
+        except subprocess.CalledProcessError as e:
+            print(f"sqlcmd failed with exit code {e.returncode}")
+            sys.exit(e.returncode)
+        except Exception as e:
+            print(f"Error executing sqlcmd: {e}")
+            sys.exit(1)
         EOF
       env:
         DB_CONNECTION_STRING: ${{ env.DB_CONNECTION_STRING }}

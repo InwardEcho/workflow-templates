@@ -431,14 +431,10 @@ jobs:
           environment-name: 'dev'
           backup-required: false
           migration_script_path: './dev_migration_script.sql'
-          sql_server: ${{ vars.DEV_DB_SERVER }}
-          sql_database: ${{ vars.DEV_DB_NAME }}
-          sql_user: ${{ vars.DEV_DB_USER }}
-          sql_password: ${{ secrets.DEV_DB_PASSWORD }}
           dotnet-version: ${{ inputs.dotnet_version }}
         env:
           # This is for the dotnet ef database update path within the composite action, if script path is not used.
-          DB_CONNECTION_STRING: ${{ secrets.DEV_DB_CONNECTION_STRING }}
+          DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
 
       - name: 'DEV: Deploy Application'
         id: deploy_app
