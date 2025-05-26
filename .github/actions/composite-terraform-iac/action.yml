@@ -18,7 +18,7 @@ inputs:
   terraform-vars:
     description: 'kv per line of terraform variables'
     required: false
-    default: '{}'
+    default: ''
   plan-output-file:
     description: 'Filename for Terraform plan output.'
     required: false
@@ -136,22 +136,24 @@ runs:
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       run: |
-        # Parse JSON input and create tfvars file
         TFVARS_FILE="generated.auto.tfvars"
         
-        # Start with empty file
-        > "$TFVARS_FILE"
+        # Start with environment
+        echo "environment = \"${{ inputs.environment-name }}\"" > "$TFVARS_FILE"
         
-        # Add environment (always included)
-        echo "environment = \"${{ inputs.environment-name }}\"" >> "$TFVARS_FILE"
-        
-        # Parse JSON and add variables
-        if [[ "${{ inputs.terraform-vars }}" != "{}" ]]; then
-          echo '${{ inputs.terraform-vars }}' | jq -r 'to_entries[] | "\(.key) = \"\(.value)\""' >> "$TFVARS_FILE"
+        # Process key-value pairs
+        if [[ -n "${{ inputs.terraform-vars }}" ]]; then
+          while IFS='=' read -r key value; do
+            if [[ -n "$key" && -n "$value" ]]; then
+              # Remove quotes if they exist and re-add them
+              value=$(echo "$value" | sed 's/^"//;s/"$//')
+              echo "$key = \"$value\"" >> "$TFVARS_FILE"
+            fi
+          done <<< "${{ inputs.terraform-vars }}"
         fi
         
         echo "Generated $TFVARS_FILE:"
-        cat "$TFVARS_FILE"      
+        cat "$TFVARS_FILE"
 
     - name: Terraform Plan
       id: run_terraform_plan
