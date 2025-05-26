@@ -218,7 +218,7 @@ runs:
 
         # Get environment variables
         connection_string = os.environ.get('DB_CONNECTION_STRING', '')
-        script_path = os.environ.get('SCRIPT_PATH', '')
+        script_path = os.environ.get('MIGRATION_SCRIPT_PATH', '')
 
         print(f"Script path: {script_path}")
 
