@@ -146,6 +146,7 @@ runs:
         import re
         import subprocess
         import sys
+        import shutil
 
         def parse_connection_string(conn_str):
             """Parse .NET style connection string into components."""
