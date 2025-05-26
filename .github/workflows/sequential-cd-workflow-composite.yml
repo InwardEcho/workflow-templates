@@ -41,7 +41,7 @@ on:
       DB_CONNECTION_STRING:
         description: 'Database connection string for migrations'
         required: true
-      AZURE_CREDENTIALS:
+      AZURE_CREDENTIALS_APP_SERVICE:
         description: 'Azure credentials for infrastructure deployment'
         required: true
       AZURE_CLIENT_ID:
