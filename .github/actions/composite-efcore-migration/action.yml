@@ -137,40 +137,66 @@ runs:
         inputs.migration_script_path != '' && inputs.migration_script_path != null
       shell: bash
       run: |
-        echo "Parsing connection string..."
-        CONNECTION_STRING="${{ env.DB_CONNECTION_STRING }}"
+        # Install sqlparse library for proper connection string parsing
+        pip3 install sqlparse urllib3
         
-        # Parse using sed
-        SERVER=$(echo "$CONNECTION_STRING" | sed -n 's/.*Server=tcp:$ [^,;]* $ .*/\1/p')
-        if [[ -z "$SERVER" ]]; then
-          SERVER=$(echo "$CONNECTION_STRING" | sed -n 's/.*Server=$ [^;]* $ .*/\1/p')
-        fi
-        
-        DATABASE=$(echo "$CONNECTION_STRING" | sed -n 's/.*Initial Catalog=$ [^;]* $ .*/\1/p')
-        if [[ -z "$DATABASE" ]]; then
-          DATABASE=$(echo "$CONNECTION_STRING" | sed -n 's/.*Database=$ [^;]* $ .*/\1/p')
-        fi
-        
-        USER=$(echo "$CONNECTION_STRING" | sed -n 's/.*User ID=$ [^;]* $ .*/\1/p')
-        PASSWORD=$(echo "$CONNECTION_STRING" | sed -n 's/.*Password=$ [^;]* $ .*/\1/p')
-        
-        # Debug output
-        echo "Parsed SERVER: '$SERVER'"
-        echo "Parsed DATABASE: '$DATABASE'"
-        echo "Parsed USER: '$USER'"
-        echo "Password set: $([ -n "$PASSWORD" ] && echo 'yes' || echo 'no')"
-        
-        # Validate
-        if [[ -z "$SERVER" || -z "$DATABASE" || -z "$USER" || -z "$PASSWORD" ]]; then
-          echo "::error::Failed to parse connection string"
-          exit 1
-        fi
-        
-        echo "Applying SQL migration script: ${{ inputs.migration_script_path }} to $DATABASE on $SERVER"
-        
+        # Use Python with proper parsing
+        python3 << 'EOF'
+        import urllib.parse
+        import subprocess
+        import sys
+        import os
+
+        conn_str = os.environ.get('DB_CONNECTION_STRING', '')
+
+        # Parse connection string properly
+        # Split by semicolon and create dict
+        params = {}
+        for pair in conn_str.split(';'):
+            if '=' in pair and pair.strip():
+                key, value = pair.split('=', 1)
+                params[key.strip()] = value.strip()
+
+        # Extract with proper key mapping
+        server_key = next((k for k in params.keys() if k.lower() in ['server', 'data source']), None)
+        db_key = next((k for k in params.keys() if k.lower() in ['initial catalog', 'database']), None)
+        user_key = next((k for k in params.keys() if k.lower() in ['user id', 'uid']), None)
+        pwd_key = next((k for k in params.keys() if k.lower() in ['password', 'pwd']), None)
+
+        if not all([server_key, db_key, user_key, pwd_key]):
+            print("Error: Could not find required connection string parameters")
+            sys.exit(1)
+
+        server = params[server_key].replace('tcp:', '').split(',')[0]  # Remove tcp: and port
+        database = params[db_key]
+        user = params[user_key]
+        password = params[pwd_key]
+
+        print(f"Applying SQL migration script to {database} on {server}")
+
         # Run sqlcmd
-        sqlcmd -S "$SERVER" -d "$DATABASE" -U "$USER" -P "$PASSWORD" -i "${{ inputs.migration_script_path }}" -b -C
+        cmd = [
+            'sqlcmd',
+            '-S', server,
+            '-d', database, 
+            '-U', user,
+            '-P', password,
+            '-i', os.environ.get('MIGRATION_SCRIPT_PATH', ''),
+            '-b', '-C'
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        print(result.stdout)
+        if result.stderr:
+            print(result.stderr, file=sys.stderr)
+            
+        sys.exit(result.returncode)
+        EOF
+      env:
+        DB_CONNECTION_STRING: ${{ env.DB_CONNECTION_STRING }}
+        MIGRATION_SCRIPT_PATH: ${{ inputs.migration_script_path }}
       continue-on-error: false
+
 
     # - name: Apply SQL Migration Script
     #   id: apply_sql_script
