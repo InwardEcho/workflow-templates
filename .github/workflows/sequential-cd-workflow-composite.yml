@@ -151,220 +151,220 @@ jobs:
           echo "Will deploy to TEST: $DEPLOY_TEST"
           echo "Will deploy to PROD: $DEPLOY_PROD"
 
-  plan_to_dev:
-    name: 'Plan for DEV Environment'
-    needs: determine_deployment_stages
-    if: needs.determine_deployment_stages.outputs.deploy_dev == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+  # plan_to_dev:
+  #   name: 'Plan for DEV Environment'
+  #   needs: determine_deployment_stages
+  #   if: needs.determine_deployment_stages.outputs.deploy_dev == 'true'
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Checkout code
+  #       uses: actions/checkout@v4
 
-      - name: 'DEV: Log Source Branch'
-        shell: bash
-        run: |
-          echo "Deployment to DEV from source branch: ${{ needs.determine_deployment_stages.outputs.source_branch }}"
+  #     - name: 'DEV: Log Source Branch'
+  #       shell: bash
+  #       run: |
+  #         echo "Deployment to DEV from source branch: ${{ needs.determine_deployment_stages.outputs.source_branch }}"
 
-      - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v4
-        if: inputs.db_migration_project_path != ''
-        with:
-          dotnet-version: ${{ inputs.dotnet_version }}
+  #     - name: Setup .NET SDK
+  #       uses: actions/setup-dotnet@v4
+  #       if: inputs.db_migration_project_path != ''
+  #       with:
+  #         dotnet-version: ${{ inputs.dotnet_version }}
 
-      - name: Install EF Core Tools
-        shell: bash
-        if: inputs.db_migration_project_path != ''
-        run: |
-          dotnet tool install --global dotnet-ef
-          echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
+  #     - name: Install EF Core Tools
+  #       shell: bash
+  #       if: inputs.db_migration_project_path != ''
+  #       run: |
+  #         dotnet tool install --global dotnet-ef
+  #         echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
 
-      - name: 'DEV: Generate Database Migration Script'
-        shell: bash
-        if: inputs.db_migration_project_path != ''
-        run: dotnet ef migrations script -o dev_migration_script.sql --project ${{ inputs.db_migration_project_path }} --idempotent
-        env:
-          DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
+  #     - name: 'DEV: Generate Database Migration Script'
+  #       shell: bash
+  #       if: inputs.db_migration_project_path != ''
+  #       run: dotnet ef migrations script -o dev_migration_script.sql --project ${{ inputs.db_migration_project_path }} --idempotent
+  #       env:
+  #         DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
 
-      - name: 'DEV: Generate Infrastructure Plan'
-        if: inputs.terraform_directory != ''
-        uses: InwardEcho/workflow-templates/.github/actions/composite-terraform-iac@main
-        with:
-          working-directory: ${{ inputs.terraform_directory }}
-          terraform-command: 'plan'
-          environment-name: 'dev'
-          var-file: 'terraform.dev.tfvars' # Ensure this var-file is correct for dev plan
-          plan-output-file: 'dev.tfplan'
-        env:
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  #     - name: 'DEV: Generate Infrastructure Plan'
+  #       if: inputs.terraform_directory != ''
+  #       uses: InwardEcho/workflow-templates/.github/actions/composite-terraform-iac@main
+  #       with:
+  #         working-directory: ${{ inputs.terraform_directory }}
+  #         terraform-command: 'plan'
+  #         environment-name: 'dev'
+  #         var-file: 'terraform.dev.tfvars' # Ensure this var-file is correct for dev plan
+  #         plan-output-file: 'dev.tfplan'
+  #       env:
+  #         AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  #         AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+  #         AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  #         AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
 
-      - name: Upload DEV Terraform Plan
-        if: inputs.terraform_directory != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: dev-terraform-plan
-          path: ${{ inputs.terraform_directory }}/dev.tfplan # Ensure path is correct relative to working-directory
-          retention-days: 3
+  #     - name: Upload DEV Terraform Plan
+  #       if: inputs.terraform_directory != ''
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: dev-terraform-plan
+  #         path: ${{ inputs.terraform_directory }}/dev.tfplan # Ensure path is correct relative to working-directory
+  #         retention-days: 3
 
-      - name: Upload DEV Migration Script
-        if: inputs.db_migration_project_path != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: dev-migration-script
-          path: dev_migration_script.sql
-          retention-days: 3
+  #     - name: Upload DEV Migration Script
+  #       if: inputs.db_migration_project_path != ''
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: dev-migration-script
+  #         path: dev_migration_script.sql
+  #         retention-days: 3
 
-  plan_to_test:
-    name: 'Plan for TEST Environment'
-    needs: determine_deployment_stages
-    if: needs.determine_deployment_stages.outputs.deploy_test == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+  # plan_to_test:
+  #   name: 'Plan for TEST Environment'
+  #   needs: determine_deployment_stages
+  #   if: needs.determine_deployment_stages.outputs.deploy_test == 'true'
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Checkout code
+  #       uses: actions/checkout@v4
 
-      - name: 'TEST: Validate Source Branch'
-        shell: bash
-        run: |
-          SOURCE_BRANCH="${{ needs.determine_deployment_stages.outputs.source_branch }}"
-          echo "Validating deployment to TEST from source branch: $SOURCE_BRANCH"
-          if [[ "$SOURCE_BRANCH" == "main" || "$SOURCE_BRANCH" == feature/* ]]; then
-            echo "Branch $SOURCE_BRANCH is valid for TEST environment."
-          else
-            echo "::error::Branch '$SOURCE_BRANCH' is not allowed for TEST environment. Allowed branches: main, feature/*."
-            exit 1
-          fi
+  #     - name: 'TEST: Validate Source Branch'
+  #       shell: bash
+  #       run: |
+  #         SOURCE_BRANCH="${{ needs.determine_deployment_stages.outputs.source_branch }}"
+  #         echo "Validating deployment to TEST from source branch: $SOURCE_BRANCH"
+  #         if [[ "$SOURCE_BRANCH" == "main" || "$SOURCE_BRANCH" == feature/* ]]; then
+  #           echo "Branch $SOURCE_BRANCH is valid for TEST environment."
+  #         else
+  #           echo "::error::Branch '$SOURCE_BRANCH' is not allowed for TEST environment. Allowed branches: main, feature/*."
+  #           exit 1
+  #         fi
 
-      - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v4
-        if: inputs.db_migration_project_path != ''
-        with:
-          dotnet-version: ${{ inputs.dotnet_version }}
+  #     - name: Setup .NET SDK
+  #       uses: actions/setup-dotnet@v4
+  #       if: inputs.db_migration_project_path != ''
+  #       with:
+  #         dotnet-version: ${{ inputs.dotnet_version }}
 
-      - name: Install EF Core Tools
-        shell: bash
-        if: inputs.db_migration_project_path != ''
-        run: |
-          dotnet tool install --global dotnet-ef
-          echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
+  #     - name: Install EF Core Tools
+  #       shell: bash
+  #       if: inputs.db_migration_project_path != ''
+  #       run: |
+  #         dotnet tool install --global dotnet-ef
+  #         echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
 
-      - name: 'TEST: Generate Database Migration Script'
-        shell: bash
-        if: inputs.db_migration_project_path != ''
-        run: dotnet ef migrations script -o test_migration_script.sql --project ${{ inputs.db_migration_project_path }} --idempotent
-        env:
-          DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
+  #     - name: 'TEST: Generate Database Migration Script'
+  #       shell: bash
+  #       if: inputs.db_migration_project_path != ''
+  #       run: dotnet ef migrations script -o test_migration_script.sql --project ${{ inputs.db_migration_project_path }} --idempotent
+  #       env:
+  #         DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
 
-      - name: 'TEST: Generate Infrastructure Plan'
-        if: inputs.terraform_directory != ''
-        uses: InwardEcho/workflow-templates/.github/actions/composite-terraform-iac@main
-        with:
-          working-directory: ${{ inputs.terraform_directory }}
-          terraform-command: 'plan'
-          environment-name: 'test'
-          var-file: 'terraform.test.tfvars'
-          plan-output-file: 'test.tfplan'
-        env:
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  #     - name: 'TEST: Generate Infrastructure Plan'
+  #       if: inputs.terraform_directory != ''
+  #       uses: InwardEcho/workflow-templates/.github/actions/composite-terraform-iac@main
+  #       with:
+  #         working-directory: ${{ inputs.terraform_directory }}
+  #         terraform-command: 'plan'
+  #         environment-name: 'test'
+  #         var-file: 'terraform.test.tfvars'
+  #         plan-output-file: 'test.tfplan'
+  #       env:
+  #         AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  #         AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+  #         AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  #         AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
 
-      - name: Upload TEST Terraform Plan
-        if: inputs.terraform_directory != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-terraform-plan
-          path: ${{ inputs.terraform_directory }}/test.tfplan
-          retention-days: 3
+  #     - name: Upload TEST Terraform Plan
+  #       if: inputs.terraform_directory != ''
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: test-terraform-plan
+  #         path: ${{ inputs.terraform_directory }}/test.tfplan
+  #         retention-days: 3
 
-      - name: Upload TEST Migration Script
-        if: inputs.db_migration_project_path != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-migration-script
-          path: test_migration_script.sql
-          retention-days: 3
+  #     - name: Upload TEST Migration Script
+  #       if: inputs.db_migration_project_path != ''
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: test-migration-script
+  #         path: test_migration_script.sql
+  #         retention-days: 3
 
-  plan_to_prod:
-    name: 'Plan for PROD Environment'
-    needs: determine_deployment_stages
-    if: needs.determine_deployment_stages.outputs.deploy_prod == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+  # plan_to_prod:
+  #   name: 'Plan for PROD Environment'
+  #   needs: determine_deployment_stages
+  #   if: needs.determine_deployment_stages.outputs.deploy_prod == 'true'
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Checkout code
+  #       uses: actions/checkout@v4
 
-      - name: 'PROD: Validate Source Branch'
-        shell: bash
-        run: |
-          SOURCE_BRANCH="${{ needs.determine_deployment_stages.outputs.source_branch }}"
-          echo "Validating deployment to PROD from source branch: $SOURCE_BRANCH"
-          if [[ "$SOURCE_BRANCH" == "main" ]]; then
-            echo "Branch $SOURCE_BRANCH is valid for PROD environment."
-          else
-            echo "::error::Branch '$SOURCE_BRANCH' is not allowed for PROD environment. Allowed branch: main."
-            exit 1
-          fi
+  #     - name: 'PROD: Validate Source Branch'
+  #       shell: bash
+  #       run: |
+  #         SOURCE_BRANCH="${{ needs.determine_deployment_stages.outputs.source_branch }}"
+  #         echo "Validating deployment to PROD from source branch: $SOURCE_BRANCH"
+  #         if [[ "$SOURCE_BRANCH" == "main" ]]; then
+  #           echo "Branch $SOURCE_BRANCH is valid for PROD environment."
+  #         else
+  #           echo "::error::Branch '$SOURCE_BRANCH' is not allowed for PROD environment. Allowed branch: main."
+  #           exit 1
+  #         fi
 
-      - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v4
-        if: inputs.db_migration_project_path != ''
-        with:
-          dotnet-version: ${{ inputs.dotnet_version }}
+  #     - name: Setup .NET SDK
+  #       uses: actions/setup-dotnet@v4
+  #       if: inputs.db_migration_project_path != ''
+  #       with:
+  #         dotnet-version: ${{ inputs.dotnet_version }}
 
-      - name: Install EF Core Tools
-        shell: bash
-        if: inputs.db_migration_project_path != ''
-        run: |
-          dotnet tool install --global dotnet-ef
-          echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
+  #     - name: Install EF Core Tools
+  #       shell: bash
+  #       if: inputs.db_migration_project_path != ''
+  #       run: |
+  #         dotnet tool install --global dotnet-ef
+  #         echo "$HOME/.dotnet/tools" >> $GITHUB_PATH
 
-      - name: 'PROD: Generate Database Migration Script'
-        shell: bash
-        if: inputs.db_migration_project_path != ''
-        run: dotnet ef migrations script -o prod_migration_script.sql --project ${{ inputs.db_migration_project_path }} --idempotent
-        env:
-          DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
+  #     - name: 'PROD: Generate Database Migration Script'
+  #       shell: bash
+  #       if: inputs.db_migration_project_path != ''
+  #       run: dotnet ef migrations script -o prod_migration_script.sql --project ${{ inputs.db_migration_project_path }} --idempotent
+  #       env:
+  #         DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
 
-      - name: 'PROD: Generate Infrastructure Plan'
-        if: inputs.terraform_directory != ''
-        uses: InwardEcho/workflow-templates/.github/actions/composite-terraform-iac@main
-        with:
-          working-directory: ${{ inputs.terraform_directory }}
-          terraform-command: 'plan'
-          environment-name: 'prod'
-          var-file: 'terraform.prod.tfvars'
-          plan-output-file: 'prod.tfplan'
-        env:
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  #     - name: 'PROD: Generate Infrastructure Plan'
+  #       if: inputs.terraform_directory != ''
+  #       uses: InwardEcho/workflow-templates/.github/actions/composite-terraform-iac@main
+  #       with:
+  #         working-directory: ${{ inputs.terraform_directory }}
+  #         terraform-command: 'plan'
+  #         environment-name: 'prod'
+  #         var-file: 'terraform.prod.tfvars'
+  #         plan-output-file: 'prod.tfplan'
+  #       env:
+  #         AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  #         AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+  #         AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  #         AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
 
-      - name: Upload PROD Terraform Plan
-        if: inputs.terraform_directory != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: prod-terraform-plan
-          path: ${{ inputs.terraform_directory }}/prod.tfplan
-          retention-days: 3
+  #     - name: Upload PROD Terraform Plan
+  #       if: inputs.terraform_directory != ''
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: prod-terraform-plan
+  #         path: ${{ inputs.terraform_directory }}/prod.tfplan
+  #         retention-days: 3
 
-      - name: Upload PROD Migration Script
-        if: inputs.db_migration_project_path != ''
-        uses: actions/upload-artifact@v4
-        with:
-          name: prod-migration-script
-          path: prod_migration_script.sql
-          retention-days: 3
+  #     - name: Upload PROD Migration Script
+  #       if: inputs.db_migration_project_path != ''
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: prod-migration-script
+  #         path: prod_migration_script.sql
+  #         retention-days: 3
 
   # --- DEV Stage as a single job ---
   deploy_to_dev:
-    name: 'Deploy to DEV Environment'
-    needs: [determine_deployment_stages, plan_to_dev]
-    if: needs.determine_deployment_stages.outputs.deploy_dev == 'true' && needs.plan_to_dev.result == 'success'
+    name: 'Deploy to DEV'
+    needs: [determine_deployment_stages]
+    if: needs.determine_deployment_stages.outputs.deploy_dev == 'true'
     environment: dev
     runs-on: ubuntu-latest
     steps:
@@ -446,11 +446,10 @@ jobs:
 
   # --- TEST Stage as a single job ---
   deploy_to_test:
-    name: 'Deploy to TEST Environment'
-    needs: [determine_deployment_stages, plan_to_test, deploy_to_dev]
+    name: 'Deploy to TEST'
+    needs: [determine_deployment_stages, deploy_to_dev]
     if: >
       needs.determine_deployment_stages.outputs.deploy_test == 'true' &&
-      needs.plan_to_test.result == 'success' &&
       (
         needs.determine_deployment_stages.outputs.deploy_dev == 'false' ||
         (needs.determine_deployment_stages.outputs.deploy_dev == 'true' && needs.deploy_to_dev.result == 'success')
@@ -536,11 +535,10 @@ jobs:
 
   # --- PROD Stage as a single job ---
   deploy_to_prod:
-    name: 'Deploy to PROD Environment'
-    needs: [determine_deployment_stages, plan_to_prod, deploy_to_test]
+    name: 'Deploy to PROD'
+    needs: [determine_deployment_stages, deploy_to_test]
     if: >
       needs.determine_deployment_stages.outputs.deploy_prod == 'true' &&
-      needs.plan_to_prod.result == 'success' &&
       needs.deploy_to_test.result == 'success'
     environment: prod
     runs-on: ubuntu-latest
