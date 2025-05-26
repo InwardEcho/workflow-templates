@@ -197,10 +197,10 @@ jobs:
           var-file: 'terraform.dev.tfvars' # Ensure this var-file is correct for dev plan
           plan-output-file: 'dev.tfplan'
         env:
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID_DEV }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET_DEV }}
-          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID_DEV }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID_DEV }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
 
       - name: Upload DEV Terraform Plan
         if: inputs.terraform_directory != ''
