@@ -50,6 +50,7 @@ on:
       DB_CONNECTION_STRING:
         description: 'Database connection string for migrations'
         required: true
+      
       AZURE_CREDENTIALS_APP_SERVICE:
         description: 'Azure credentials for infrastructure deployment'
         required: true
@@ -437,7 +438,7 @@ jobs:
           dotnet-version: ${{ inputs.dotnet_version }}
         env:
           # This is for the dotnet ef database update path within the composite action, if script path is not used.
-          DB_CONNECTION_STRING_CALLER: ${{ secrets.DEV_DB_CONNECTION_STRING }}
+          DB_CONNECTION_STRING: ${{ secrets.DEV_DB_CONNECTION_STRING }}
 
       - name: 'DEV: Deploy Application'
         id: deploy_app
@@ -527,7 +528,7 @@ jobs:
           dotnet-version: ${{ inputs.dotnet_version }}
         env:
           # This is for the dotnet ef database update path within the composite action, if script path is not used.
-          DB_CONNECTION_STRING_CALLER: ${{ secrets.TEST_DB_CONNECTION_STRING }}
+          DB_CONNECTION_STRING: ${{ secrets.TEST_DB_CONNECTION_STRING }}
 
       - name: 'TEST: Deploy Application'
         id: deploy_app
@@ -616,7 +617,7 @@ jobs:
           dotnet-version: ${{ inputs.dotnet_version }}
         env:
           # This is for the dotnet ef database update path within the composite action, if script path is not used.
-          DB_CONNECTION_STRING_CALLER: ${{ secrets.PROD_DB_CONNECTION_STRING }}
+          DB_CONNECTION_STRING: ${{ secrets.PROD_DB_CONNECTION_STRING }}
 
       - name: 'PROD: Deploy Application'
         id: deploy_app

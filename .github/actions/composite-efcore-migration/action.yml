@@ -137,30 +137,72 @@ runs:
         inputs.migration_script_path != '' && inputs.migration_script_path != null
       shell: bash
       run: |
-        # Example connection string
+        echo "Parsing connection string..."
         CONNECTION_STRING="${{ env.DB_CONNECTION_STRING }}"
         
-        # Parse connection string (example for common formats)
-        if [[ $CONNECTION_STRING == *"Server="* ]]; then
-          # Parse .NET style connection string
-          SERVER=$(echo "$CONNECTION_STRING" | grep -oP 'Server=\K[^;]*')
-          DATABASE=$(echo "$CONNECTION_STRING" | grep -oP 'Database=\K[^;]*')
-          USER=$(echo "$CONNECTION_STRING" | grep -oP 'User Id=\K[^;]*' || echo "$CONNECTION_STRING" | grep -oP 'Uid=\K[^;]*')
-          PASSWORD=$(echo "$CONNECTION_STRING" | grep -oP 'Password=\K[^;]*' || echo "$CONNECTION_STRING" | grep -oP 'Pwd=\K[^;]*')
-        elif [[ $CONNECTION_STRING == *"server="* ]]; then
-          # Parse lowercase version
-          SERVER=$(echo "$CONNECTION_STRING" | grep -oP 'server=\K[^;]*')
-          DATABASE=$(echo "$CONNECTION_STRING" | grep -oP 'database=\K[^;]*')
-          USER=$(echo "$CONNECTION_STRING" | grep -oP 'user id=\K[^;]*' || echo "$CONNECTION_STRING" | grep -oP 'uid=\K[^;]*')
-          PASSWORD=$(echo "$CONNECTION_STRING" | grep -oP 'password=\K[^;]*' || echo "$CONNECTION_STRING" | grep -oP 'pwd=\K[^;]*')
+        # Parse using sed
+        SERVER=$(echo "$CONNECTION_STRING" | sed -n 's/.*Server=tcp:$ [^,;]* $ .*/\1/p')
+        if [[ -z "$SERVER" ]]; then
+          SERVER=$(echo "$CONNECTION_STRING" | sed -n 's/.*Server=$ [^;]* $ .*/\1/p')
         fi
         
-        # Run sqlcmd with parsed parameters
+        DATABASE=$(echo "$CONNECTION_STRING" | sed -n 's/.*Initial Catalog=$ [^;]* $ .*/\1/p')
+        if [[ -z "$DATABASE" ]]; then
+          DATABASE=$(echo "$CONNECTION_STRING" | sed -n 's/.*Database=$ [^;]* $ .*/\1/p')
+        fi
+        
+        USER=$(echo "$CONNECTION_STRING" | sed -n 's/.*User ID=$ [^;]* $ .*/\1/p')
+        PASSWORD=$(echo "$CONNECTION_STRING" | sed -n 's/.*Password=$ [^;]* $ .*/\1/p')
+        
+        # Debug output
+        echo "Parsed SERVER: '$SERVER'"
+        echo "Parsed DATABASE: '$DATABASE'"
+        echo "Parsed USER: '$USER'"
+        echo "Password set: $([ -n "$PASSWORD" ] && echo 'yes' || echo 'no')"
+        
+        # Validate
+        if [[ -z "$SERVER" || -z "$DATABASE" || -z "$USER" || -z "$PASSWORD" ]]; then
+          echo "::error::Failed to parse connection string"
+          exit 1
+        fi
+        
+        echo "Applying SQL migration script: ${{ inputs.migration_script_path }} to $DATABASE on $SERVER"
+        
+        # Run sqlcmd
         sqlcmd -S "$SERVER" -d "$DATABASE" -U "$USER" -P "$PASSWORD" -i "${{ inputs.migration_script_path }}" -b -C
-      env:
-        # The script should use this environment-name variable
-        DB_CONNECTION_STRING_FOR_BACKUP: ${{ env.DB_CONNECTION_STRING }}
       continue-on-error: false
+
+    # - name: Apply SQL Migration Script
+    #   id: apply_sql_script
+    #   if: >
+    #     ((inputs.backup-required == 'false') || (inputs.backup-required == 'true' && steps.backup_database.outcome == 'success')) &&
+    #     inputs.migration_script_path != '' && inputs.migration_script_path != null
+    #   shell: bash
+    #   run: |
+    #     # Example connection string
+    #     CONNECTION_STRING="${{ env.DB_CONNECTION_STRING }}"
+        
+    #     # Parse connection string (example for common formats)
+    #     if [[ $CONNECTION_STRING == *"Server="* ]]; then
+    #       # Parse .NET style connection string
+    #       SERVER=$(echo "$CONNECTION_STRING" | grep -oP 'Server=\K[^;]*')
+    #       DATABASE=$(echo "$CONNECTION_STRING" | grep -oP 'Database=\K[^;]*')
+    #       USER=$(echo "$CONNECTION_STRING" | grep -oP 'User Id=\K[^;]*' || echo "$CONNECTION_STRING" | grep -oP 'Uid=\K[^;]*')
+    #       PASSWORD=$(echo "$CONNECTION_STRING" | grep -oP 'Password=\K[^;]*' || echo "$CONNECTION_STRING" | grep -oP 'Pwd=\K[^;]*')
+    #     elif [[ $CONNECTION_STRING == *"server="* ]]; then
+    #       # Parse lowercase version
+    #       SERVER=$(echo "$CONNECTION_STRING" | grep -oP 'server=\K[^;]*')
+    #       DATABASE=$(echo "$CONNECTION_STRING" | grep -oP 'database=\K[^;]*')
+    #       USER=$(echo "$CONNECTION_STRING" | grep -oP 'user id=\K[^;]*' || echo "$CONNECTION_STRING" | grep -oP 'uid=\K[^;]*')
+    #       PASSWORD=$(echo "$CONNECTION_STRING" | grep -oP 'password=\K[^;]*' || echo "$CONNECTION_STRING" | grep -oP 'pwd=\K[^;]*')
+    #     fi
+        
+    #     # Run sqlcmd with parsed parameters
+    #     sqlcmd -S "$SERVER" -d "$DATABASE" -U "$USER" -P "$PASSWORD" -i "${{ inputs.migration_script_path }}" -b -C
+    #   env:
+    #     # The script should use this environment-name variable
+    #     DB_CONNECTION_STRING_FOR_BACKUP: ${{ env.DB_CONNECTION_STRING }}
+    #   continue-on-error: false
 
     - name: Apply EF Core Migrations via CLI
       id: apply_ef_cli
