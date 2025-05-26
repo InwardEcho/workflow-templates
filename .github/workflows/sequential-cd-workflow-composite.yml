@@ -38,10 +38,10 @@ on:
         required: true
         type: string
       terraform-vars:
-        description: 'JSON object of terraform variables'
+        description: 'kv perline of terraform variables'
         required: false
         type: string
-        default: '{}'
+        default: ''
       terraform-var-file:
         description: 'Path to existing tfvars file'
         required: false
@@ -205,6 +205,7 @@ jobs:
           environment-name: 'dev'
           var-file: ${{ inputs.terraform-var-file }}
           plan-output-file: 'dev.tfplan'
+          terraform-vars: ${{ inputs.terraform-vars }}
         env:
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
           AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
