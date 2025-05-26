@@ -216,6 +216,24 @@ runs:
                 'password': password
             }
 
+        # Check if sqlcmd is available
+        sqlcmd_path = shutil.which('sqlcmd')
+        if not sqlcmd_path:
+            print("Error: sqlcmd is not available on this system")
+            print("Available SQL tools:")
+            for tool in ['sqlcmd', 'mssql-cli', 'bcp']:
+                tool_path = shutil.which(tool)
+                if tool_path:
+                    print(f"  {tool}: {tool_path}")
+                else:
+                    print(f"  {tool}: NOT FOUND")
+            
+            # Check if we can install sqlcmd
+            print("\nAttempting to install SQL Server command line tools...")
+            sys.exit(1)
+        else:
+            print(f"✓ sqlcmd found at: {sqlcmd_path}")
+
         # Get environment variables
         connection_string = os.environ.get('DB_CONNECTION_STRING', '')
         script_path = os.environ.get('MIGRATION_SCRIPT_PATH', '')
