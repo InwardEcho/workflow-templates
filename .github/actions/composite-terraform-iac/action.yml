@@ -95,7 +95,7 @@ runs:
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       run: |
-        terraform workspace select ${{ inputs.environment-name }} || terraform workspace new ${{ inputs.environment-name }}
+        terraform workspace select -or-create ${{ inputs.environment-name }}
       env:
         ARM_CLIENT_ID: ${{ env.AZURE_CLIENT_ID }}
         ARM_CLIENT_SECRET: ${{ env.AZURE_CLIENT_SECRET }}
