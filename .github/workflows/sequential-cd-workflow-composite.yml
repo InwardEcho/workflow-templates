@@ -3,7 +3,7 @@
 # based on a user-selected deployment scope. Each environment is deployed in a single job using composite actions.
 # Leverages GitHub Environments for secrets, approvals, and environment-specific configurations.
 
-name: Sequential CD Workflow - Composite Actions
+name: CD
 
 on:
   workflow_call:
