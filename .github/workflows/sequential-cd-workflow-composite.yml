@@ -199,6 +199,9 @@ jobs:
           # Build the project
           dotnet build ${{ inputs.db_migration_project_path }} --configuration Release --no-restore
           dotnet ef migrations script -o dev_migration_script.sql --project ${{ inputs.db_migration_project_path }} --idempotent
+          echo "=== Database Migration Script ==="
+          dotnet ef migrations script --project ${{ inputs.db_migration_project_path }} --idempotent
+          echo "=== End of Migration Script ==="
         env:
           DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
 
