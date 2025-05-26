@@ -64,12 +64,12 @@ runs:
         echo "AZURE_SUBSCRIPTION_ID is: ${{ env.AZURE_SUBSCRIPTION_ID }}"
         echo "AZURE_CLIENT_SECRET is set: ${{ env.AZURE_CLIENT_SECRET != '' }}"
 
-    - name: Azure Login
-      uses: azure/login@v1
-      with:
-        client-id: ${{ env.AZURE_CLIENT_ID }}
-        tenant-id: ${{ env.AZURE_TENANT_ID }}
-        subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+    # - name: Azure Login
+    #   uses: azure/login@v1
+    #   with:
+    #     client-id: ${{ env.AZURE_CLIENT_ID }}
+    #     tenant-id: ${{ env.AZURE_TENANT_ID }}
+    #     subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
 
     - name: Terraform Init
       id: init
