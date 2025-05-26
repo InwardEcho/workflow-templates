@@ -192,7 +192,13 @@ jobs:
       - name: 'DEV: Generate Database Migration Script'
         shell: bash
         if: inputs.db_migration_project_path != ''
-        run: dotnet ef migrations script -o dev_migration_script.sql --project ${{ inputs.db_migration_project_path }} --idempotent
+        run: |
+          # Restore dependencies first
+          dotnet restore ${{ inputs.db_migration_project_path }}
+          
+          # Build the project
+          dotnet build ${{ inputs.db_migration_project_path }} --configuration Release --no-restore
+          dotnet ef migrations script -o dev_migration_script.sql --project ${{ inputs.db_migration_project_path }} --idempotent
         env:
           DB_CONNECTION_STRING: ${{ secrets.DB_CONNECTION_STRING }}
 
