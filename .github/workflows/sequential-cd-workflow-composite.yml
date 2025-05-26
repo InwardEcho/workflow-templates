@@ -517,10 +517,6 @@ jobs:
           environment-name: 'test'
           backup-required: false
           migration_script_path: './test_migration_script.sql'
-          sql_server: ${{ vars.TEST_DB_SERVER }}
-          sql_database: ${{ vars.TEST_DB_NAME }}
-          sql_user: ${{ vars.TEST_DB_USER }}
-          sql_password: ${{ secrets.TEST_DB_PASSWORD }}
           dotnet-version: ${{ inputs.dotnet_version }}
         env:
           # This is for the dotnet ef database update path within the composite action, if script path is not used.
@@ -606,10 +602,6 @@ jobs:
           environment-name: 'prod'
           backup-required: true # As per original prod config
           migration_script_path: './prod_migration_script.sql'
-          sql_server: ${{ vars.PROD_DB_SERVER }}
-          sql_database: ${{ vars.PROD_DB_NAME }}
-          sql_user: ${{ vars.PROD_DB_USER }}
-          sql_password: ${{ secrets.PROD_DB_PASSWORD }}
           dotnet-version: ${{ inputs.dotnet_version }}
         env:
           # This is for the dotnet ef database update path within the composite action, if script path is not used.

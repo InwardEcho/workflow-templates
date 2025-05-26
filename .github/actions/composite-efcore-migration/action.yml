@@ -230,6 +230,40 @@ runs:
             print("Error: SCRIPT_PATH environment variable is empty")
             sys.exit(1)
 
+        # Check if script file exists
+        if not script_path:
+            print("Error: SCRIPT_PATH environment variable is empty")
+            sys.exit(1)
+
+        if not os.path.exists(script_path):
+            print(f"Error: SQL script file does not exist: {script_path}")
+            # List files in the directory for debugging
+            script_dir = os.path.dirname(script_path) if os.path.dirname(script_path) else '.'
+            print(f"Contents of directory '{script_dir}':")
+            try:
+                for item in os.listdir(script_dir):
+                    item_path = os.path.join(script_dir, item)
+                    if os.path.isfile(item_path):
+                        print(f"  FILE: {item}")
+                    elif os.path.isdir(item_path):
+                        print(f"  DIR:  {item}/")
+            except Exception as e:
+                print(f"  Could not list directory: {e}")
+            sys.exit(1)
+
+        if not os.path.isfile(script_path):
+            print(f"Error: Script path exists but is not a file: {script_path}")
+            sys.exit(1)
+
+        # Check if file is readable
+        try:
+            with open(script_path, 'r') as f:
+                file_size = len(f.read())
+            print(f"Script file found: {script_path} ({file_size} bytes)")
+        except Exception as e:
+            print(f"Error: Cannot read script file {script_path}: {e}")
+            sys.exit(1)
+
         # Parse connection string
         conn_params = parse_connection_string(connection_string)
 
