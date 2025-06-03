@@ -48,7 +48,7 @@ env:
 jobs:
   setup_and_version:
     name: Initialize CI, Determine Variables & Calculate Version
-    runs-on: [self-hosted]
+    runs-on: self-hosted
     outputs:
       is_main_branch: ${{ steps.determine_branch.outputs.is_main }}
       versioning_strategy: ${{ steps.determine_branch.outputs.version_strategy }}
